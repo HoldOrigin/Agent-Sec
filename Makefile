@@ -1,0 +1,28 @@
+.PHONY: run test build replay fmt vet clean
+
+GOCACHE ?= $(CURDIR)/.cache/go-build
+GOPATH ?= $(CURDIR)/.cache/gopath
+export GOCACHE
+export GOPATH
+
+run:
+	go run ./cmd/server
+
+test:
+	go test ./...
+
+build:
+	go build -trimpath -o bin/sentinel ./cmd/server
+	go build -trimpath -o bin/replay ./cmd/replay
+
+replay:
+	go run ./cmd/replay -reset -interval 50ms
+
+fmt:
+	go fmt ./...
+
+vet:
+	go vet ./...
+
+clean:
+	go clean -cache -testcache

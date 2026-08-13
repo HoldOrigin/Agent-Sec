@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Sentinel AI Native Runtime Security MVP">
+  <title>Sentinel · AI Native Runtime Security</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">S</span><span>Sentinel</span></div>
+      <div class="environment"><span class="status-dot"></span> Runtime connected</div>
+      <nav>
+        <a class="active" href="#overview"><span>⌁</span> 调查中心</a>
+        <a href="#incidents"><span>◇</span> Incidents</a>
+        <a href="#evidence"><span>◎</span> 证据检索</a>
+        <a href="#policy"><span>⌾</span> 策略边界</a>
+      </nav>
+      <div class="side-note">
+        <span class="eyebrow">POLICY MODE</span>
+        <strong>Human in the loop</strong>
+        <p>生产写操作需要人工审批</p>
+      </div>
+      <div class="version">MVP · v0.1</div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="breadcrumb">SECURITY OPERATIONS / INVESTIGATION</p>
+          <h1>AI 调查中心</h1>
+        </div>
+        <div class="top-actions">
+          <span class="live-pill"><i></i> SYSTEM HEALTHY</span>
+          <button id="resetButton" class="icon-button" title="清空演示数据">↻</button>
+        </div>
+      </header>
+
+      <section class="hero" id="overview">
+        <div>
+          <span class="eyebrow cyan">EVIDENCE-FIRST INVESTIGATION</span>
+          <h2>从离散事件，还原完整攻击故事。</h2>
+          <p>确定性规则发现异常，调查 Agent 按需查询上下文，策略引擎守住执行边界。</p>
+        </div>
+        <div class="hero-flow" aria-label="调查流程">
+          <div><span>01</span>Event</div><b>→</b><div><span>02</span>Behavior</div><b>→</b><div><span>03</span>Graph</div><b>→</b><div><span>04</span>Incident</div><b>→</b><div><span>05</span>Story</div>
+        </div>
+      </section>
+
+      <section class="metrics" aria-label="安全概览">
+        <article><span>RUNTIME EVENTS</span><strong id="metricEvents">0</strong><small>已采集事实</small></article>
+        <article><span>BEHAVIORS</span><strong id="metricAlerts">0</strong><small>确定性语义</small></article>
+        <article><span>INCIDENTS</span><strong id="metricIncidents">0</strong><small>已聚合调查</small></article>
+        <article class="accent"><span>NEEDS APPROVAL</span><strong id="metricApproval">0</strong><small>受控处置动作</small></article>
+      </section>
+
+      <section class="workspace">
+        <div class="left-column">
+          <div class="section-heading">
+            <div><span class="eyebrow">DEMO REPLAY</span><h3>选择调查场景</h3></div>
+            <span id="replayStatus" class="muted">等待事件输入</span>
+          </div>
+          <div class="scenarios" id="scenarios">
+            <button class="scenario-card selected" data-dataset="web_rce">
+              <span class="scenario-icon danger">⌁</span><span><strong>Web RCE</strong><small>完整载荷执行链</small></span><i>CRITICAL</i>
+            </button>
+            <button class="scenario-card" data-dataset="normal_ops">
+              <span class="scenario-icon safe">✓</span><span><strong>链路负样本</strong><small>孤立行为不生成 Incident</small></span><i>NO INCIDENT</i>
+            </button>
+          </div>
+          <button id="replayButton" class="primary-button"><span>▶</span> 回放并自动调查</button>
+
+          <div class="section-heading incident-heading" id="incidents">
+            <div><span class="eyebrow">INCIDENT QUEUE</span><h3>调查结果</h3></div>
+            <span id="incidentCount" class="count-pill">0</span>
+          </div>
+          <div id="incidentList" class="incident-list">
+            <div class="empty-state"><span>⌁</span><strong>暂无 Incident</strong><p>选择上方场景并启动事件回放</p></div>
+          </div>
+        </div>
+
+        <div class="detail-panel" id="detailPanel">
+          <div class="detail-empty">
+            <div class="radar"><span></span><i></i></div>
+            <h3>等待调查结果</h3>
+            <p>Agent 完成证据收集后，攻击图和风险结论会显示在这里。</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
