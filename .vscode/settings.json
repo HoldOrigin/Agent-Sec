@@ -1,0 +1,9 @@
+{
+  "go.goroot": "C:\\Users\\pc\\Documents\\Codex\\tools\\go1.26.5\\go",
+  "go.toolsEnvVars": {
+    "PATH": "C:\\Users\\pc\\Documents\\Codex\\tools\\go1.26.5\\go\\bin;${env:PATH}"
+  },
+  "terminal.integrated.env.windows": {
+    "PATH": "C:\\Users\\pc\\Documents\\Codex\\tools\\go1.26.5\\go\\bin;${env:PATH}"
+  }
+}

@@ -19,17 +19,17 @@ eBPF facts / JSONL Replay
 - 后端、规则、关联、调查编排：Go 1.26
 - HTTP：Go 标准库 `net/http`
 - 存储：线程安全内存 Repository，已预留 PostgreSQL 替换边界
-- Sensor：Linux CO-RE eBPF 源码骨架
+- Sensor：Linux CO-RE eBPF + 8 MiB Ring Buffer + Go Collector
 - Policy：Go 本地决策器及等价 Rego 策略
 - UI：无构建依赖的静态 HTML/CSS/JavaScript
-- 运行依赖：Go 标准库，无第三方 Go Module
+- Collector 依赖：`github.com/cilium/ebpf`；Server 仍仅使用 Go 标准库
 
 ## 本地启动
 
 要求 Go 1.26 或更高版本。
 
 ```powershell
-cd "C:\Users\pc\Documents\Codex\2026-07-02\new-chat\ai-native-security"
+cd "F:\workspace\Agent-Sec"
 go run ./cmd/server
 ```
 
@@ -112,7 +112,8 @@ Incident 必须在同一 Host/Container 和五分钟窗口中包含 B001、B003�
 ```text
 cmd/
 ├── server/                 HTTP Server 入口
-└── replay/                 JSONL Collector/Replay CLI
+├── replay/                 JSONL Collector/Replay CLI
+└── collector/              Linux eBPF Ring Buffer Collector
 
 internal/
 ├── app/                    配置、应用装配、Pipeline Service
@@ -127,7 +128,7 @@ internal/
 ├── collection/             NORMAL/WATCH/INVESTIGATION
 └── httpapi/                REST API、错误和静态资源适配
 
-sensor/ebpf/                Linux CO-RE eBPF Sensor 骨架
+sensor/ebpf/                Linux CO-RE eBPF Sensor、共享 ABI 与构建文件
 public/                     Incident 调查控制台
 datasets/                   攻击样本和负样本
 opa/policies/               等价 Rego 策略
@@ -163,7 +164,7 @@ HTTP 不包含检测逻辑，CLI、HTTP 和测试均调用同一个 `app.Service
 ```json
 {
   "status": "ok",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "implementation": "go"
 }
 ```
@@ -190,6 +191,6 @@ Docker 使用 Go 多阶段构建，最终镜像仅包含静态 Go 二进制、UI
 
 ## 当前边界
 
-真实 eBPF 程序只能在 Linux 内核加载。本仓库已有 CO-RE Sensor 源码骨架，但当前 Windows 环境无法验证内核加载。Go Server、Go Replay CLI、事件处理、Behavior、Graph、Incident、Investigation、Policy 和 UI 静态服务均已运行验证。
+真实 eBPF 程序只能在 Linux 内核加载。本仓库已实现 CO-RE Sensor、稳定事件 ABI、内核过滤/采集等级 Map、Ring Buffer Reader、容器元数据补充、批量上报和丢事件指标。当前 Windows 环境已验证 Go 测试和 Linux Collector 交叉编译；BPF object 编译、内核 verifier 和负载测试仍需在 Linux CI/VM 完成。
 
-下一阶段优先实现基于 `cilium/ebpf` 的 Linux Ring Buffer Collector，然后将 Memory Repository 替换为 PostgreSQL。
+详细设计和运行方法见 [`docs/EBPF_RING_BUFFER_DESIGN.md`](docs/EBPF_RING_BUFFER_DESIGN.md)。后续重点是 syscall enter/exit 成功语义、CRI 元数据缓存、服务端采集策略订阅和断网 WAL。

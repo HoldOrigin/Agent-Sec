@@ -3,3 +3,5 @@ bin/
 coverage/
 *.log
 .env
+sensor/ebpf/runtime.bpf.o
+sensor/ebpf/vmlinux.h
