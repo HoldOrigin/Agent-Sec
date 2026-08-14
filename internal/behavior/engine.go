@@ -18,6 +18,7 @@ var Definitions = map[string]model.BehaviorDefinition{
 	"B003": {Type: "DownloadExecutable", RiskScore: 15}, "B004": {Type: "WriteExecutableToTemp", RiskScore: 10},
 	"B005": {Type: "ChangeExecutablePermission", RiskScore: 10}, "B006": {Type: "ExecuteFromTemp", RiskScore: 25},
 	"B007": {Type: "UnknownBinaryExecution", RiskScore: 10}, "B008": {Type: "RareExternalConnection", RiskScore: 20},
+	"B900": {Type: "LocalSecurityPolicyMatch", RiskScore: 90},
 }
 var webProcesses = stringSet("java", "nginx", "php-fpm", "node", "python", "gunicorn", "uwsgi")
 var shells = stringSet("sh", "bash", "dash", "zsh")
@@ -50,6 +51,14 @@ func (e *Engine) Derive(events []model.RuntimeEvent) []model.Behavior {
 		result = append(result, model.Behavior{BehaviorID: "beh-" + strings.ToLower(code) + "-" + shortHash(key), Code: code, Type: def.Type, Timestamp: event.Timestamp, Subject: model.EntityRef{Type: "process", ID: event.ProcessEntityID, Name: event.Process}, Object: object, RiskScore: def.RiskScore, Evidence: ids, Scope: model.Scope{HostID: event.Host, ContainerID: event.ContainerID, Workload: event.Workload, Namespace: event.Namespace}, ProcessTreeID: fmt.Sprintf("%s:%s:%d:%d", event.Host, event.ContainerID, event.PID, event.PPID), CorrelationKey: key, Details: details})
 	}
 	for _, event := range ordered {
+		if metaBool(event, "security_alert") {
+			add("B900", event, model.EntityRef{Type: "process", ID: event.ProcessEntityID, Name: event.Process}, []model.RuntimeEvent{event}, map[string]any{
+				"rule_id":   firstNonEmpty(metaString(event, "detection_rule_id"), "LOCAL-DETECTION"),
+				"severity":  firstNonEmpty(metaString(event, "detection_severity"), "high"),
+				"reason":    firstNonEmpty(metaString(event, "detection_reason"), "local runtime security policy matched"),
+				"blacklist": metaBool(event, "blacklist_hit"),
+			})
+		}
 		if event.Type == "process_exec" && webProcesses[event.ParentProcess] && shells[event.Process] {
 			add("B001", event, model.EntityRef{Type: "process", ID: event.ProcessEntityID, Name: event.Process}, []model.RuntimeEvent{event}, map[string]any{"parent": event.ParentProcess, "child": event.Process})
 		}

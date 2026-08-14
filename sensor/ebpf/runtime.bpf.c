@@ -38,6 +38,15 @@ struct {
     __type(value, __u8);
 } exclude_cgroup SEC(".maps");
 
+/* Performance-only raw pathname prefix exclusions. Not a security boundary. */
+struct {
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __uint(max_entries, 256);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(key, struct runtime_path_lpm_key);
+    __type(value, __u8);
+} exclude_path_prefix SEC(".maps");
+
 /* cgroup_id -> NORMAL/WATCH/INVESTIGATION */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -78,6 +87,24 @@ static __always_inline int should_drop(__u32 tgid, __u32 uid, __u64 cgroup_id)
         return true;
     }
     return false;
+}
+
+static __always_inline int read_path_key(struct runtime_path_lpm_key *key, const void *path)
+{
+    int length = bpf_probe_read_user_str(key->data, sizeof(key->data), path);
+    if (length <= 1)
+        return length;
+    key->prefixlen = (length - 1) * 8;
+    return length;
+}
+
+static __always_inline int should_drop_path(struct runtime_path_lpm_key *key)
+{
+    if (key->prefixlen && bpf_map_lookup_elem(&exclude_path_prefix, key)) {
+        count_filtered();
+        return 1;
+    }
+    return 0;
 }
 
 static __always_inline struct runtime_event *reserve_event(__u32 type)
@@ -190,6 +217,8 @@ int on_openat(struct trace_event_raw_sys_enter *ctx)
     __u32 type = (flags & 0100) ? EVENT_FILE_CREATE : EVENT_FILE_OPEN; /* O_CREAT */
     __u64 cgroup_id = bpf_get_current_cgroup_id();
     __u8 *level;
+    struct runtime_path_lpm_key path_key = {};
+    int path_length;
     if (type == EVENT_FILE_OPEN) {
         level = bpf_map_lookup_elem(&collection_level, &cgroup_id);
         if (!level || *level == COLLECTION_NORMAL) {
@@ -197,10 +226,16 @@ int on_openat(struct trace_event_raw_sys_enter *ctx)
             return 0;
         }
     }
+    path_length = read_path_key(&path_key, (const void *)ctx->args[1]);
+    if (path_length > 0 && should_drop_path(&path_key))
+        return 0;
     struct runtime_event *event = reserve_event(type);
     if (!event)
         return 0;
-    bpf_probe_read_user_str(event->arg0, sizeof(event->arg0), (const void *)ctx->args[1]);
+    if (path_length > 0)
+        __builtin_memcpy(event->arg0, path_key.data, sizeof(event->arg0));
+    else
+        bpf_probe_read_user_str(event->arg0, sizeof(event->arg0), (const void *)ctx->args[1]);
     event->operation_flags = flags;
     submit_event(event);
     return 0;
@@ -209,10 +244,17 @@ int on_openat(struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_enter_fchmodat")
 int on_fchmodat(struct trace_event_raw_sys_enter *ctx)
 {
+    struct runtime_path_lpm_key path_key = {};
+    int path_length = read_path_key(&path_key, (const void *)ctx->args[1]);
+    if (path_length > 0 && should_drop_path(&path_key)) 
+        return 0;
     struct runtime_event *event = reserve_event(EVENT_FILE_CHMOD);
     if (!event)
         return 0;
-    bpf_probe_read_user_str(event->arg0, sizeof(event->arg0), (const void *)ctx->args[1]);
+    if (path_length > 0)
+        __builtin_memcpy(event->arg0, path_key.data, sizeof(event->arg0));
+    else
+        bpf_probe_read_user_str(event->arg0, sizeof(event->arg0), (const void *)ctx->args[1]);
     event->operation_flags = (__s32)ctx->args[2]; /* mode */
     submit_event(event);
     return 0;
@@ -221,10 +263,17 @@ int on_fchmodat(struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_enter_unlinkat")
 int on_unlinkat(struct trace_event_raw_sys_enter *ctx)
 {
+    struct runtime_path_lpm_key path_key = {};
+    int path_length = read_path_key(&path_key, (const void *)ctx->args[1]);
+    if (path_length > 0 && should_drop_path(&path_key))
+        return 0;
     struct runtime_event *event = reserve_event(EVENT_FILE_UNLINK);
     if (!event)
         return 0;
-    bpf_probe_read_user_str(event->arg0, sizeof(event->arg0), (const void *)ctx->args[1]);
+    if (path_length > 0)
+        __builtin_memcpy(event->arg0, path_key.data, sizeof(event->arg0));
+    else
+        bpf_probe_read_user_str(event->arg0, sizeof(event->arg0), (const void *)ctx->args[1]);
     submit_event(event);
     return 0;
 }

@@ -16,11 +16,12 @@ import (
 )
 
 type SourceConfig struct {
-	ObjectPath       string
-	ExcludePIDs      []uint32
-	ExcludeUIDs      []uint32
-	ExcludeCgroups   []uint64
-	CollectionLevels map[uint64]uint8
+	ObjectPath          string
+	ExcludePIDs         []uint32
+	ExcludeUIDs         []uint32
+	ExcludeCgroups      []uint64
+	ExcludePathPrefixes []string
+	CollectionLevels    map[uint64]uint8
 }
 
 type LinuxSource struct {
@@ -188,6 +189,24 @@ func (source *LinuxSource) populateExclusions(config SourceConfig) error {
 	for _, key := range config.ExcludeCgroups {
 		if err := cgroups.Update(&key, &one, ebpf.UpdateAny); err != nil {
 			return fmt.Errorf("populate exclude_cgroup: %w", err)
+		}
+	}
+	paths := source.collection.Maps["exclude_path_prefix"]
+	if paths == nil {
+		return errors.New("eBPF map exclude_path_prefix is missing")
+	}
+	type pathKey struct {
+		PrefixLen uint32
+		Data      [256]byte
+	}
+	for _, prefix := range config.ExcludePathPrefixes {
+		if len(prefix) == 0 || len(prefix) >= len(pathKey{}.Data) {
+			return fmt.Errorf("invalid excluded path prefix length %d", len(prefix))
+		}
+		key := pathKey{PrefixLen: uint32(len(prefix) * 8)}
+		copy(key.Data[:], prefix)
+		if err := paths.Update(&key, &one, ebpf.UpdateAny); err != nil {
+			return fmt.Errorf("populate exclude_path_prefix: %w", err)
 		}
 	}
 	return nil

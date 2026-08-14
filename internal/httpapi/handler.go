@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -192,7 +193,21 @@ func (h *Handler) api(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (h *Handler) decode(r *http.Request, target any) error {
-	data, err := io.ReadAll(io.LimitReader(r.Body, h.service.Config.BodyLimit+1))
+	var body io.Reader = r.Body
+	encoding := strings.TrimSpace(strings.ToLower(r.Header.Get("content-encoding")))
+	if encoding != "" && encoding != "identity" && encoding != "gzip" {
+		return app.NewError(415, "Unsupported Content-Encoding")
+	}
+	if encoding == "gzip" {
+		compressed := io.LimitReader(r.Body, h.service.Config.BodyLimit+1)
+		reader, err := gzip.NewReader(compressed)
+		if err != nil {
+			return app.NewError(400, "Invalid gzip request body")
+		}
+		defer reader.Close()
+		body = reader
+	}
+	data, err := io.ReadAll(io.LimitReader(body, h.service.Config.BodyLimit+1))
 	if err != nil {
 		return app.NewError(400, "Failed to read request body")
 	}
@@ -290,7 +305,7 @@ func candidateRule(incident model.Incident) map[string]any {
 }
 func securityHeaders(w http.ResponseWriter) {
 	w.Header().Set("access-control-allow-origin", "*")
-	w.Header().Set("access-control-allow-headers", "content-type,x-request-id")
+	w.Header().Set("access-control-allow-headers", "content-type,content-encoding,x-request-id")
 	w.Header().Set("access-control-allow-methods", "GET,POST,OPTIONS")
 	w.Header().Set("x-content-type-options", "nosniff")
 	w.Header().Set("referrer-policy", "no-referrer")

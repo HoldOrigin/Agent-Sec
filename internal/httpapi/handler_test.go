@@ -1,6 +1,8 @@
 package httpapi_test
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -66,5 +68,39 @@ func TestReplayAPIAndMetrics(t *testing.T) {
 	}
 	if payload["implementation"] != "go" {
 		t.Fatalf("health=%+v", payload)
+	}
+}
+
+func TestBatchAPIAcceptsGzip(t *testing.T) {
+	config := app.Config{Host: "127.0.0.1", Port: 8080, BodyLimit: 1_000_000, FileCacheTTL: time.Minute, CorrelationWindow: 5 * time.Minute, InvestigationWindow: 2 * time.Minute, MaxAgentSteps: 10}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpapi.New(app.New(config), root))
+	defer server.Close()
+	payload := `{"events":[{"event_id":"gzip-1","timestamp":"2026-08-14T00:00:00Z","event_type":"process_exec","host":{"host_id":"node-a","boot_id":"boot-a"},"process":{"pid":42,"ppid":1,"start_time":"2026-08-14T00:00:00Z","exe":"/bin/sh","argv":["/bin/sh"]},"parent_process":"nginx","metadata":{}}]}`
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write([]byte(payload)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/events/batch", &compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("content-type", "application/json")
+	request.Header.Set("content-encoding", "gzip")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("status=%d body=%s", response.StatusCode, body)
 	}
 }

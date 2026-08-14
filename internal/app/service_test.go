@@ -76,6 +76,59 @@ func TestNegativeSampleDoesNotCreateIncident(t *testing.T) {
 	}
 }
 
+func TestLocalSecurityPolicyMatchCreatesAlertWithoutIncident(t *testing.T) {
+	service := app.New(testConfig())
+	timestamp := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := service.Ingest(map[string]any{
+		"event_id":   "evt-local-policy-1",
+		"timestamp":  timestamp,
+		"event_type": "process_exec",
+		"host": map[string]any{
+			"host_id": "node-policy-test",
+			"boot_id": "boot-policy-test",
+		},
+		"process": map[string]any{
+			"pid":        4242,
+			"ppid":       1,
+			"exe":        "/usr/bin/id",
+			"argv":       []any{"/usr/bin/id"},
+			"start_time": timestamp,
+		},
+		"container": map[string]any{
+			"container_id": "container-policy-test",
+			"namespace":    "default",
+			"workload":     "policy-test",
+		},
+		"metadata": map[string]any{
+			"security_alert":     true,
+			"blacklist_hit":      true,
+			"detection_rule_id":  "BL-TEST",
+			"detection_severity": "critical",
+			"detection_reason":   "test blacklist match",
+		},
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Incidents) != 0 {
+		t.Fatalf("incidents=%d want=0", len(result.Incidents))
+	}
+	if len(result.Behaviors) != 1 || result.Behaviors[0].Code != "B900" {
+		t.Fatalf("behaviors=%+v", result.Behaviors)
+	}
+	alerts := service.Store.Alerts()
+	if len(alerts) != 1 {
+		t.Fatalf("alerts=%d want=1", len(alerts))
+	}
+	if alerts[0].Severity != "critical" || len(alerts[0].RuleIDs) != 1 || alerts[0].RuleIDs[0] != "BL-TEST" {
+		t.Fatalf("alert=%+v", alerts[0])
+	}
+	policies := service.Collection.List()
+	if len(policies) != 1 || policies[0].Level != "INVESTIGATION" {
+		t.Fatalf("collection policy=%+v", policies)
+	}
+}
+
 func TestServiceInstancesAreIsolated(t *testing.T) {
 	first := app.New(testConfig())
 	second := app.New(testConfig())

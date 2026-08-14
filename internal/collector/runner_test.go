@@ -60,3 +60,38 @@ func TestRunnerDecodesBatchesAndFlushes(t *testing.T) {
 		t.Fatalf("unexpected metrics: samples=%d decode=%d submitted=%d", metrics.Samples.Load(), metrics.DecodeErrors.Load(), metrics.Submitted.Load())
 	}
 }
+
+func TestRunnerRoutesAndPromotesAlertContext(t *testing.T) {
+	encode := func(event sensorabi.RawEvent) []byte {
+		event.ABIVersion = sensorabi.ABIVersion
+		event.Size = sensorabi.EventSize
+		event.TimestampNS++
+		var payload bytes.Buffer
+		if err := binary.Write(&payload, binary.LittleEndian, event); err != nil {
+			t.Fatal(err)
+		}
+		return payload.Bytes()
+	}
+	file := sensorabi.RawEvent{Type: uint32(sensorabi.EventFileCreate), TimestampNS: 1, TGID: 7, CgroupID: 123}
+	copy(file.Arg0[:], "/tmp/payload")
+	exec := sensorabi.RawEvent{Type: uint32(sensorabi.EventProcessExec), TimestampNS: 2, TGID: 7, CgroupID: 123}
+	copy(exec.Arg0[:], "/tmp/payload")
+	connect := sensorabi.RawEvent{Type: uint32(sensorabi.EventNetworkConnect), TimestampNS: 3, TGID: 7, CgroupID: 123, Flags: sensorabi.FlagIPv4, DestinationPort: 443}
+	copy(connect.Comm[:], "payload")
+	copy(connect.DestinationAddr[:4], []byte{8, 8, 8, 8})
+	source := &sliceSource{samples: [][]byte{encode(file), encode(exec), encode(connect)}}
+	sender := &recordingSender{}
+	transformer, _ := NewTransformer(HostInfo{HostID: "host", BootID: "boot", BootTime: time.Unix(1, 0).UTC()}, nil)
+	metrics := &Metrics{}
+	router := NewUploadRouter(UploadRouterConfig{BufferTTL: time.Minute, BufferMaxBytes: 1024 * 1024, BufferMaxBytesPerScope: 1024 * 1024, AggregateWindow: time.Minute}, nil, nil, metrics)
+	runner := &Runner{Source: source, Transformer: transformer, Sender: sender, Router: router, Metrics: metrics, BatchSize: 100, FlushInterval: time.Hour, HighFlushInterval: time.Hour}
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.batches) != 1 || sender.batches[0] != 3 {
+		t.Fatalf("unexpected batches: %#v", sender.batches)
+	}
+	if metrics.ContextPromoted.Load() != 1 || metrics.HighPrioritySubmitted.Load() != 3 {
+		t.Fatalf("unexpected metrics: promoted=%d high=%d", metrics.ContextPromoted.Load(), metrics.HighPrioritySubmitted.Load())
+	}
+}

@@ -5,7 +5,7 @@
 ```text
 eBPF facts / JSONL Replay
   → Event Processor
-  → 8 Behavior Primitives
+  → 9 Behavior Primitives
   → Runtime Behavior Graph
   → 5-minute Incident Correlation
   → Investigation Agent
@@ -19,10 +19,10 @@ eBPF facts / JSONL Replay
 - 后端、规则、关联、调查编排：Go 1.26
 - HTTP：Go 标准库 `net/http`
 - 存储：线程安全内存 Repository，已预留 PostgreSQL 替换边界
-- Sensor：Linux CO-RE eBPF + 8 MiB Ring Buffer + Go Collector
-- Policy：Go 本地决策器及等价 Rego 策略
+- Sensor：Linux CO-RE eBPF + 8 MiB Ring Buffer + 分级过滤 Go Collector
+- Policy：CEL 黑白名单、本地 Go 兜底决策器及等价 Rego 策略
 - UI：无构建依赖的静态 HTML/CSS/JavaScript
-- Collector 依赖：`github.com/cilium/ebpf`；Server 仍仅使用 Go 标准库
+- Collector 依赖：`github.com/cilium/ebpf`、`github.com/google/cel-go` 和 YAML v3；Server 仍仅使用 Go 标准库
 
 ## 本地启动
 
@@ -104,8 +104,10 @@ go run ./cmd/replay -file datasets/normal_ops.jsonl -reset
 | B006 | ExecuteFromTemp | 25 |
 | B007 | UnknownBinaryExecution | 10 |
 | B008 | RareExternalConnection | 20 |
+| B900 | LocalSecurityPolicyMatch | 90 |
 
 Incident 必须在同一 Host/Container 和五分钟窗口中包含 B001、B003、B006、B008。风险分最高限制为 100。
+`B900` 来自节点本地黑名单或确定性安全规则命中，可直接创建 Alert，不要求先形成 Incident。
 
 ## Go 项目结构
 
@@ -164,7 +166,7 @@ HTTP 不包含检测逻辑，CLI、HTTP 和测试均调用同一个 `app.Service
 ```json
 {
   "status": "ok",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "implementation": "go"
 }
 ```
@@ -191,6 +193,6 @@ Docker 使用 Go 多阶段构建，最终镜像仅包含静态 Go 二进制、UI
 
 ## 当前边界
 
-真实 eBPF 程序只能在 Linux 内核加载。本仓库已实现 CO-RE Sensor、稳定事件 ABI、内核过滤/采集等级 Map、Ring Buffer Reader、容器元数据补充、批量上报和丢事件指标。当前 Windows 环境已验证 Go 测试和 Linux Collector 交叉编译；BPF object 编译、内核 verifier 和负载测试仍需在 Linux CI/VM 完成。
+真实 eBPF 程序只能在 Linux 内核加载。本仓库已实现 CO-RE Sensor、稳定事件 ABI、内核过滤/采集等级 Map、Ring Buffer Reader、容器元数据补充、ALWAYS/ON_ALERT/AGGREGATE/LOCAL_ONLY 分级上报、有界证据缓存、高频事件聚合、gzip 批量上报和分阶段指标。当前 Windows 环境已验证 Go 测试和 Linux Collector 交叉编译；BPF object 编译、内核 verifier 和负载测试仍需在 Linux CI/VM 完成。
 
 详细设计和运行方法见 [`docs/EBPF_RING_BUFFER_DESIGN.md`](docs/EBPF_RING_BUFFER_DESIGN.md)。后续重点是 syscall enter/exit 成功语义、CRI 元数据缓存、服务端采集策略订阅和断网 WAL。

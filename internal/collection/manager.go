@@ -26,6 +26,10 @@ func (m *Manager) ObserveBehaviors(items []model.Behavior) {
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
 	for _, item := range items {
+		if item.Type == "LocalSecurityPolicyMatch" {
+			m.set(item.Scope, "INVESTIGATION", now.Add(m.window), "Local security policy matched", now)
+			continue
+		}
 		if item.Type == "WebServerSpawnShell" {
 			m.set(item.Scope, "WATCH", now.Add(m.window), "WebServerSpawnShell detected", now)
 		}

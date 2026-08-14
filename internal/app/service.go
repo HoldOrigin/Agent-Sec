@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"sentinel/internal/behavior"
 	"sentinel/internal/collection"
@@ -84,6 +85,36 @@ func (s *Service) RunPipeline() ([]model.Behavior, []model.Incident, error) {
 	behaviors := s.Behavior.Derive(events)
 	s.Store.ReplaceBehaviors(behaviors)
 	s.Collection.ObserveBehaviors(behaviors)
+	for _, item := range behaviors {
+		if item.Type != "LocalSecurityPolicyMatch" {
+			continue
+		}
+		eventID := ""
+		if len(item.Evidence) > 0 {
+			eventID = item.Evidence[0]
+		}
+		now := item.Timestamp
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		severity := normalizedSeverity(detailString(item.Details, "severity"))
+		ruleID := detailString(item.Details, "rule_id")
+		if ruleID == "" {
+			ruleID = "LOCAL-DETECTION"
+		}
+		s.Store.AddAlert(model.Alert{
+			AlertID:        "alt-" + strings.TrimPrefix(item.BehaviorID, "beh-"),
+			Title:          "Local runtime security policy matched",
+			Severity:       severity,
+			RuleIDs:        []string{ruleID},
+			EventIDs:       append([]string{}, item.Evidence...),
+			EventID:        eventID,
+			CorrelationKey: item.CorrelationKey,
+			Status:         "open",
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		})
+	}
 	correlated := s.Incident.Correlate(behaviors, events)
 	s.Collection.ObserveIncidents(correlated)
 	incidents := []model.Incident{}
@@ -174,4 +205,18 @@ func stringValue(v any) string {
 		return s
 	}
 	return ""
+}
+
+func detailString(details map[string]any, key string) string {
+	value, _ := details[key].(string)
+	return value
+}
+
+func normalizedSeverity(value string) string {
+	switch strings.ToLower(value) {
+	case "low", "medium", "high", "critical":
+		return strings.ToLower(value)
+	default:
+		return "high"
+	}
 }

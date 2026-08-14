@@ -1,0 +1,33 @@
+version: "mvp-v1"
+rules:
+  - id: BL-TEMP-EXEC
+    kind: blacklist
+    description: executable launched from a temporary runtime directory
+    priority: 100
+    severity: critical
+    condition: >-
+      event.event_type == "process_exec" &&
+      (event.process.exe.startsWith("/tmp/") ||
+       event.process.exe.startsWith("/var/tmp/") ||
+       event.process.exe.startsWith("/dev/shm/"))
+
+  - id: BL-WEB-SHELL
+    kind: blacklist
+    description: web service process spawned an interactive shell
+    priority: 90
+    severity: critical
+    condition: >-
+      event.event_type == "process_exec" &&
+      event.parent_process in ["java", "nginx", "php-fpm", "node", "python", "gunicorn", "uwsgi"] &&
+      (event.process.exe == "sh" || event.process.exe.endsWith("/sh") ||
+       event.process.exe == "bash" || event.process.exe.endsWith("/bash") ||
+       event.process.exe == "dash" || event.process.exe.endsWith("/dash") ||
+       event.process.exe == "zsh" || event.process.exe.endsWith("/zsh"))
+
+  - id: WL-KUBE-PROBE
+    kind: whitelist
+    description: trusted Kubernetes health probe process
+    priority: 50
+    condition: >-
+      event.container.namespace in ["kube-system", "monitoring"] &&
+      event.process.exe in ["/usr/bin/node-exporter", "/bin/kube-probe"]

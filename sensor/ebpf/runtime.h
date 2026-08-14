@@ -7,6 +7,7 @@
 #define RUNTIME_ARG0_LEN 256
 #define RUNTIME_ARG1_LEN 128
 #define RUNTIME_ADDR_LEN 16
+#define RUNTIME_PATH_LEN 256
 #define RUNTIME_STATS_KEY 0
 
 enum runtime_event_type {
@@ -66,6 +67,11 @@ struct runtime_stats {
     __u64 emitted;
     __u64 reserve_failed;
     __u64 filtered;
+};
+
+struct runtime_path_lpm_key {
+    __u32 prefixlen;
+    __u8 data[RUNTIME_PATH_LEN];
 };
 
 #endif
