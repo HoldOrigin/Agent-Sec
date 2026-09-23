@@ -66,7 +66,9 @@ func (h *Handler) api(w http.ResponseWriter, r *http.Request) error {
 	if r.Method == http.MethodGet {
 		switch path {
 		case "/api/health":
-			return writeJSON(w, 200, map[string]any{"status": "ok", "version": app.Version, "implementation": "go", "components": map[string]string{"event_processor": "ok", "behavior_engine": "ok", "incident_engine": "ok", "investigation_agent": "ok"}})
+			return writeJSON(w, 200, map[string]any{"status": "ok", "version": app.Version, "implementation": "go", "components": map[string]any{"event_processor": "ok", "behavior_engine": "ok", "incident_engine": "ok", "investigation_agent": "ok", "ai_agent": h.service.AIStatus()}})
+		case "/api/agent/status":
+			return writeJSON(w, 200, h.service.AIStatus())
 		case "/api/summary":
 			return writeJSON(w, 200, h.service.Summary())
 		case "/api/datasets":
@@ -170,6 +172,21 @@ func (h *Handler) api(w http.ResponseWriter, r *http.Request) error {
 				return err
 			}
 			return writeJSON(w, 200, item)
+		case "/api/agent/investigate-ai":
+			var input struct {
+				IncidentID string `json:"incident_id"`
+			}
+			if err := h.decode(r, &input); err != nil {
+				return err
+			}
+			if input.IncidentID == "" {
+				return app.NewError(400, "请提供 incident_id")
+			}
+			result, err := h.service.InvestigateAI(r.Context(), input.IncidentID)
+			if err != nil {
+				return err
+			}
+			return writeJSON(w, 200, result)
 		case "/api/actions/evaluate":
 			var request policy.ActionRequest
 			if err := h.decode(r, &request); err != nil {

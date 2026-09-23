@@ -1,10 +1,12 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
 
+	agentic "sentinel/internal/agentic"
 	"sentinel/internal/behavior"
 	"sentinel/internal/collection"
 	"sentinel/internal/incident"
@@ -24,6 +26,8 @@ type Service struct {
 	Collection *collection.Manager
 	Policy     *policy.Engine
 	Agent      *investigation.Agent
+	AIAgent    *agentic.Runtime
+	AIError    error
 }
 type PipelineResult struct {
 	Events    []model.RuntimeEvent `json:"events"`
@@ -36,6 +40,14 @@ type PipelineResult struct {
 func New(config Config) *Service {
 	s := &Service{Config: config, Store: store.NewMemory(), Processor: processor.New(config.FileCacheTTL), Behavior: behavior.New(), Incident: incident.New(config.CorrelationWindow), Collection: collection.New(config.InvestigationWindow), Policy: policy.New()}
 	s.Agent = investigation.New(s.Store, s.Policy, config.MaxAgentSteps)
+	if strings.TrimSpace(config.QwenAPIKey) != "" {
+		s.AIAgent, s.AIError = agentic.NewRuntime(s.Store, agentic.RuntimeConfig{
+			APIKey: config.QwenAPIKey, PlannerModel: config.PlannerModel, ExecutorModel: config.ExecutorModel,
+			AnalyzerModel: config.AnalyzerModel, AuditPath: config.AgentAuditPath,
+			MaxDecisions: config.MaxAgentDecisions, MaxToolCalls: config.MaxAgentToolCalls,
+			Window: config.CorrelationWindow,
+		})
+	}
 	return s
 }
 func (s *Service) Reset() { s.Store.Reset(); s.Processor.Reset(); s.Collection.Reset() }
@@ -136,6 +148,31 @@ func (s *Service) Investigate(id string) (model.Incident, error) {
 		return model.Incident{}, NewError(404, "Incident not found")
 	}
 	return s.Agent.Investigate(item)
+}
+
+func (s *Service) InvestigateAI(ctx context.Context, id string) (agentic.RunResult, error) {
+	if s.AIError != nil {
+		return agentic.RunResult{}, NewError(503, "AI Agent 初始化失败: "+s.AIError.Error())
+	}
+	if s.AIAgent == nil {
+		return agentic.RunResult{}, NewError(503, "AI Agent 未启用，请设置 QWEN_API_KEY")
+	}
+	item, ok := s.Store.Incident(id)
+	if !ok {
+		return agentic.RunResult{}, NewError(404, "Incident not found")
+	}
+	return s.AIAgent.Investigate(ctx, item)
+}
+
+func (s *Service) AIStatus() map[string]any {
+	status := map[string]any{"enabled": s.AIAgent != nil && s.AIError == nil}
+	if s.AIAgent != nil {
+		status["models"] = s.AIAgent.Models()
+	}
+	if s.AIError != nil {
+		status["error"] = s.AIError.Error()
+	}
+	return status
 }
 func (s *Service) EvaluateAction(request policy.ActionRequest) (model.PolicyDecision, error) {
 	if request.Action == "" {

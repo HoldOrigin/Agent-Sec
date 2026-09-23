@@ -17,6 +17,13 @@ type Config struct {
 	CorrelationWindow   time.Duration
 	InvestigationWindow time.Duration
 	MaxAgentSteps       int
+	QwenAPIKey          string
+	PlannerModel        string
+	ExecutorModel       string
+	AnalyzerModel       string
+	AgentAuditPath      string
+	MaxAgentDecisions   int
+	MaxAgentToolCalls   int
 }
 
 func LoadConfig() (Config, error) {
@@ -48,7 +55,30 @@ func LoadConfig() (Config, error) {
 	if host == "" {
 		host = "0.0.0.0"
 	}
-	return Config{Host: host, Port: port, BodyLimit: int64(body), FileCacheTTL: time.Duration(fileTTL) * time.Second, CorrelationWindow: time.Duration(correlation) * time.Second, InvestigationWindow: time.Duration(investigation) * time.Second, MaxAgentSteps: steps}, nil
+	decisions, err := envInt("AI_MAX_DECISIONS", 4, 1, 12)
+	if err != nil {
+		return Config{}, err
+	}
+	toolCalls, err := envInt("AI_MAX_TOOL_CALLS", 12, 1, 50)
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{
+		Host: host, Port: port, BodyLimit: int64(body), FileCacheTTL: time.Duration(fileTTL) * time.Second,
+		CorrelationWindow: time.Duration(correlation) * time.Second, InvestigationWindow: time.Duration(investigation) * time.Second,
+		MaxAgentSteps: steps, QwenAPIKey: os.Getenv("QWEN_API_KEY"),
+		PlannerModel:   envString("QWEN_PLANNER_MODEL", "qwen3.7-plus"),
+		ExecutorModel:  envString("QWEN_EXECUTOR_MODEL", "qwen3.7-plus"),
+		AnalyzerModel:  envString("QWEN_ANALYZER_MODEL", "qwen3.7-plus"),
+		AgentAuditPath: os.Getenv("AI_AUDIT_LOG_PATH"), MaxAgentDecisions: decisions, MaxAgentToolCalls: toolCalls,
+	}, nil
+}
+
+func envString(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
 }
 func envInt(name string, fallback, min, max int) (int, error) {
 	raw := os.Getenv(name)

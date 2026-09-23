@@ -104,3 +104,23 @@ func TestBatchAPIAcceptsGzip(t *testing.T) {
 		t.Fatalf("status=%d body=%s", response.StatusCode, body)
 	}
 }
+
+func TestAIInvestigationIsExplicitlyDisabledWithoutAPIKey(t *testing.T) {
+	config := app.Config{Host: "127.0.0.1", Port: 8080, BodyLimit: 1_000_000, FileCacheTTL: time.Minute, CorrelationWindow: 5 * time.Minute, InvestigationWindow: 2 * time.Minute, MaxAgentSteps: 10}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpapi.New(app.New(config), root))
+	defer server.Close()
+
+	response, err := http.Post(server.URL+"/api/agent/investigate-ai", "application/json", strings.NewReader(`{"incident_id":"inc-missing"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("status=%d body=%s", response.StatusCode, body)
+	}
+}

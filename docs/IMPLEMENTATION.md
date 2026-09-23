@@ -1,5 +1,8 @@
 # Go 基础框架实现说明
 
+项目的完整运行架构和逐模块职责见 [`ARCHITECTURE.md`](ARCHITECTURE.md)。本文只保留应用层
+实现约束和可替换边界。
+
 ## 应用边界
 
 `internal/app.Service` 是应用层入口，负责装配并协调：
@@ -43,7 +46,7 @@ HTTP、Replay CLI 和测试不直接跨层调用检测实现。
 | 当前实现 | 后续实现 |
 |---|---|
 | `store.Memory` | PostgreSQL Repository |
-| `cmd/replay` | Linux `cilium/ebpf` Ring Buffer Collector |
+| `cmd/replay` | Linux `cilium/ebpf` Ring Buffer Collector（已实现） |
 | `policy.Engine` | OPA REST Adapter |
 | 确定性调查归纳 | LLM Structured Output Adapter |
 | 内存 Runtime Graph | PostgreSQL 关系表或图数据库 |
@@ -71,9 +74,9 @@ Repository 替换必须保证：
 
 ## 下一阶段
 
-1. 实现 Linux `cilium/ebpf` Collector 和 Ring Buffer 丢失事件指标。
+1. 在 Ubuntu/Linux 实机完成 BPF verifier、Ring Buffer 和资源开销验证。
 2. 定义 Repository Interface，增加 PostgreSQL migration。
 3. 将 Behavior Engine 改为增量计算并加入乱序缓冲。
 4. 增加 Pipeline 延迟、调查耗时和错误率指标。
 5. 接入 LLM 时使用固定 JSON Schema，并在返回前校验所有 Evidence ID。
-6. 生产部署前加入认证、租户隔离、RBAC、审计日志和 TLS。
+6. 生产部署前加入认证、租户隔离、RBAC、审计日志和 mTLS。

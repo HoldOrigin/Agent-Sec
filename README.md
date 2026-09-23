@@ -111,6 +111,10 @@ Incident 必须在同一 Host/Container 和五分钟窗口中包含 B001、B003�
 
 ## Go 项目结构
 
+完整的运行架构、事件链路、模块职责和当前边界见
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。eBPF ABI、Map、Ring Buffer 和背压细节见
+[`docs/EBPF_RING_BUFFER_DESIGN.md`](docs/EBPF_RING_BUFFER_DESIGN.md)。
+
 ```text
 cmd/
 ├── server/                 HTTP Server 入口
@@ -122,7 +126,7 @@ internal/
 ├── model/                  RuntimeEvent/Behavior/Incident 领域模型
 ├── store/                  线程安全 Memory Repository
 ├── processor/              Normalize/Filter/Deduplicate/Delay Cache
-├── behavior/               8 个确定性 Behavior Primitive
+├── behavior/               9 个确定性 Behavior Primitive（B001–B008、B900）
 ├── graph/                  Runtime Behavior Graph
 ├── incident/               五分钟 Pattern Correlation
 ├── investigation/          Root Cause/Timeline/Blast Radius/Attack Story
