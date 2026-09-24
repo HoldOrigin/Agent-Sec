@@ -10,6 +10,14 @@
 #define RUNTIME_PATH_LEN 256
 #define RUNTIME_STATS_KEY 0
 
+/*
+ * vmlinux.h contains BTF types, but it intentionally does not provide the
+ * AF_* preprocessor macros from userspace socket headers. Keep private names
+ * here to avoid including headers that conflict with CO-RE kernel types.
+ */
+#define RUNTIME_AF_INET 2
+#define RUNTIME_AF_INET6 10
+
 enum runtime_event_type {
     EVENT_PROCESS_FORK = 1,
     EVENT_PROCESS_EXEC = 2,

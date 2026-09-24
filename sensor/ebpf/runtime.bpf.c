@@ -291,14 +291,14 @@ int on_connect(struct trace_event_raw_sys_enter *ctx)
         return 0;
     }
     event->address_family = family;
-    if (family == AF_INET) {
+    if (family == RUNTIME_AF_INET) {
         struct sockaddr_in addr4 = {};
         if (bpf_probe_read_user(&addr4, sizeof(addr4), address))
             goto discard;
         event->destination_port = bpf_ntohs(addr4.sin_port);
         __builtin_memcpy(event->destination_addr, &addr4.sin_addr.s_addr, 4);
         event->flags |= EVENT_FLAG_IPV4;
-    } else if (family == AF_INET6) {
+    } else if (family == RUNTIME_AF_INET6) {
         struct sockaddr_in6 addr6 = {};
         if (bpf_probe_read_user(&addr6, sizeof(addr6), address))
             goto discard;
