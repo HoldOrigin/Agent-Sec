@@ -47,6 +47,17 @@ func TestHighVolumeFileOpenIsFiltered(t *testing.T) {
 	}
 }
 
+func TestCollectorAlertEvidenceBypassesLowValueFilter(t *testing.T) {
+	p := processor.New(time.Minute)
+	result, err := p.Process(map[string]any{"event_id": "open-alert-001", "timestamp": "2026-08-10T12:00:00Z", "type": "file_open", "host": "node-1", "pid": float64(10), "ppid": float64(1), "process": "cat", "metadata": map[string]any{"path": "/usr/share/locale/messages.mo", "security_alert": true, "detection_rule_id": "BL-READ"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Dropped != "" || len(result.Accepted) != 1 {
+		t.Fatalf("alert evidence was filtered: %+v", result)
+	}
+}
+
 func clone(input map[string]any) map[string]any {
 	result := map[string]any{}
 	for key, value := range input {

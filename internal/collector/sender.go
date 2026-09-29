@@ -10,10 +10,17 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"sentinel/internal/model"
 )
 
+type UploadBatch struct {
+	Events []map[string]any `json:"events"`
+	Alerts []model.Alert    `json:"alerts,omitempty"`
+}
+
 type BatchSender interface {
-	Send(ctx context.Context, events []map[string]any) error
+	Send(ctx context.Context, batch UploadBatch) error
 }
 
 type HTTPSender struct {
@@ -26,7 +33,7 @@ type HTTPSender struct {
 
 func NewHTTPSender(baseURL string, timeout time.Duration, retries int, metrics ...*Metrics) *HTTPSender {
 	sender := &HTTPSender{
-		endpoint:     strings.TrimRight(baseURL, "/") + "/api/events/batch",
+		endpoint:     strings.TrimRight(baseURL, "/") + "/api/collector/batch",
 		client:       &http.Client{Timeout: timeout},
 		retries:      retries,
 		gzipMinBytes: 1024,
@@ -37,13 +44,13 @@ func NewHTTPSender(baseURL string, timeout time.Duration, retries int, metrics .
 	return sender
 }
 
-func (sender *HTTPSender) Send(ctx context.Context, events []map[string]any) error {
-	if len(events) == 0 {
+func (sender *HTTPSender) Send(ctx context.Context, batch UploadBatch) error {
+	if len(batch.Events) == 0 && len(batch.Alerts) == 0 {
 		return nil
 	}
-	payload, err := json.Marshal(map[string]any{"reset": false, "events": events})
+	payload, err := json.Marshal(batch)
 	if err != nil {
-		return fmt.Errorf("encode event batch: %w", err)
+		return fmt.Errorf("encode collector batch: %w", err)
 	}
 	requestBody := payload
 	contentEncoding := ""
@@ -51,10 +58,10 @@ func (sender *HTTPSender) Send(ctx context.Context, events []map[string]any) err
 		var compressed bytes.Buffer
 		writer := gzip.NewWriter(&compressed)
 		if _, err := writer.Write(payload); err != nil {
-			return fmt.Errorf("compress event batch: %w", err)
+			return fmt.Errorf("compress collector batch: %w", err)
 		}
 		if err := writer.Close(); err != nil {
-			return fmt.Errorf("finish event batch compression: %w", err)
+			return fmt.Errorf("finish collector batch compression: %w", err)
 		}
 		if compressed.Len() < len(payload) {
 			requestBody = compressed.Bytes()
@@ -102,5 +109,5 @@ func (sender *HTTPSender) Send(ctx context.Context, events []map[string]any) err
 		case <-timer.C:
 		}
 	}
-	return fmt.Errorf("deliver event batch: %w", lastErr)
+	return fmt.Errorf("deliver collector batch: %w", lastErr)
 }

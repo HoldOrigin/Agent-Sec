@@ -18,7 +18,7 @@ eBPF facts / JSONL Replay
 
 - 后端、规则、关联、调查编排：Go 1.26
 - HTTP：Go 标准库 `net/http`
-- 存储：线程安全内存 Repository，已预留 PostgreSQL 替换边界
+- 存储：PostgreSQL 持久化 Repository（JSONB + 索引列）；Server 默认拒绝无数据库启动
 - Sensor：Linux CO-RE eBPF + 8 MiB Ring Buffer + 分级过滤 Go Collector
 - Policy：CEL 黑白名单、本地 Go 兜底决策器及等价 Rego 策略
 - UI：无构建依赖的静态 HTML/CSS/JavaScript
@@ -30,6 +30,7 @@ eBPF facts / JSONL Replay
 
 ```powershell
 cd "F:\workspace\Agent-Sec"
+$env:DATABASE_URL = "postgres://sentinel:change-me@127.0.0.1:5432/sentinel?sslmode=disable"
 go run ./cmd/server
 ```
 
@@ -42,10 +43,20 @@ C:\Users\pc\Documents\Codex\tools\go1.26.5\go\bin
 新终端会从用户 PATH 识别 `go`。当前终端若尚未刷新，可以使用完整路径：
 
 ```powershell
+$env:DATABASE_URL = "postgres://sentinel:change-me@127.0.0.1:5432/sentinel?sslmode=disable"
 & "C:\Users\pc\Documents\Codex\tools\go1.26.5\go\bin\go.exe" run ./cmd/server
 ```
 
 打开 <http://localhost:8080>。
+
+Server 必须设置 `DATABASE_URL`，会自动建表并在启动时恢复事件、行为、告警和 Incident：
+
+```bash
+export DATABASE_URL='postgres://sentinel:change-me@127.0.0.1:5432/sentinel?sslmode=disable'
+go run ./cmd/server
+```
+
+安装、Docker Compose、Schema 和持久化验证见 [`docs/POSTGRESQL_STORAGE.md`](docs/POSTGRESQL_STORAGE.md)。
 
 ## 构建与测试
 
@@ -92,6 +103,31 @@ go run ./cmd/replay -file datasets/normal_ops.jsonl -reset
 
 负样本只产生一个 `WebServerSpawnShell` Behavior，采集级别进入 `WATCH`，不会创建 Incident 或调用 Investigation Agent。
 
+## AI Agent 场景测试
+
+离线运行全部 8 个场景，验证 Plan → ReAct 工具调用 → 证据绑定 → Analyze → PASS/FAIL：
+
+```bash
+go run ./cmd/agent-scenario -scenario all -mode deterministic
+```
+
+调用真实 Qwen 模型验证同一受控流程：
+
+```bash
+export QWEN_API_KEY='...'
+go run ./cmd/agent-scenario -scenario web-rce -mode qwen -audit .artifacts/qwen-scenario.jsonl
+```
+
+场景包括 Web RCE、SSH 账号入侵、容器逃逸、Kubernetes ServiceAccount 滥用、无文件注入、凭据疑似外传、合法运维负样本和遥测降级。
+
+Ubuntu 上验证真实 eBPF 采集、CEL 告警、Incident 和 AI Agent 自动调查：
+
+```bash
+sudo -E bash scripts/e2e_ebpf_ai_demo.sh
+```
+
+攻击模拟器是固定且无破坏性的信号生成器：只写入 `/tmp/agent-sec-demo/payload`，并向文档专用 TEST-NET 地址 `203.0.113.77:443` 发起 250ms 连接尝试，不发送数据、不提权、不利用漏洞。完整说明见 [`docs/AI_AGENT_SCENARIO_TESTING.md`](docs/AI_AGENT_SCENARIO_TESTING.md)。
+
 ## Behavior 规则
 
 | Code | Behavior | 分值 |
@@ -119,18 +155,21 @@ Incident 必须在同一 Host/Container 和五分钟窗口中包含 B001、B003�
 cmd/
 ├── server/                 HTTP Server 入口
 ├── replay/                 JSONL Collector/Replay CLI
-└── collector/              Linux eBPF Ring Buffer Collector
+├── collector/              Linux eBPF Ring Buffer Collector
+├── agent-scenario/         AI Agent 场景测试驱动器
+└── demo-payload/           无破坏性 eBPF 信号生成器
 
 internal/
 ├── app/                    配置、应用装配、Pipeline Service
 ├── model/                  RuntimeEvent/Behavior/Incident 领域模型
-├── store/                  线程安全 Memory Repository
+├── store/                  PostgreSQL 持久化与线程安全 Memory Repository
 ├── processor/              Normalize/Filter/Deduplicate/Delay Cache
 ├── behavior/               9 个确定性 Behavior Primitive（B001–B008、B900）
 ├── graph/                  Runtime Behavior Graph
 ├── incident/               五分钟 Pattern Correlation
 ├── investigation/          Root Cause/Timeline/Blast Radius/Attack Story
 ├── policy/                 响应动作 Guardrail
+├── agentscenario/          场景、Mock 数据源、断言和审计记录
 ├── collection/             NORMAL/WATCH/INVESTIGATION
 └── httpapi/                REST API、错误和静态资源适配
 
@@ -154,8 +193,10 @@ HTTP 不包含检测逻辑，CLI、HTTP 和测试均调用同一个 `app.Service
 |---|---|---|
 | `POST` | `/api/events` | 接入单条 RuntimeEvent |
 | `POST` | `/api/events/batch` | 批量接入并执行一次关联流水线 |
+| `POST` | `/api/collector/batch` | Collector 批量上报独立的 Event 与 Alert |
 | `POST` | `/api/replay` | 回放内置攻击或负样本 |
-| `GET` | `/api/events` | 查询已保留事实 |
+| `GET` | `/api/events`、`/api/events/{id}` | 按类型、主机、容器查询事件或获取详情 |
+| `GET` | `/api/alerts`、`/api/alerts/{id}` | 按级别、状态、来源、主机、容器查询告警或获取详情 |
 | `GET` | `/api/behaviors` | 查询 Behavior 及 Evidence |
 | `GET` | `/api/incidents` | 查询 Incident 和调查结果 |
 | `GET` | `/api/incidents/{id}/graph` | 查询 Runtime 子图 |
@@ -164,6 +205,8 @@ HTTP 不包含检测逻辑，CLI、HTTP 和测试均调用同一个 `app.Service
 | `POST` | `/api/agent/investigate` | 对已有 Incident 重新调查 |
 | `POST` | `/api/actions/evaluate` | Policy Guardrail 决策 |
 | `GET` | `/metrics` | Prometheus 格式基础指标 |
+
+Collector 批次协议、字段和过滤参数见 [`docs/COLLECTOR_SERVER_API.md`](docs/COLLECTOR_SERVER_API.md)。
 
 健康检查返回：
 
@@ -186,6 +229,11 @@ HTTP 不包含检测逻辑，CLI、HTTP 和测试均调用同一个 `app.Service
 | `CORRELATION_WINDOW_SECONDS` | `300` | Incident 关联窗口 |
 | `INVESTIGATION_WINDOW_SECONDS` | `120` | 动态采集窗口 |
 | `MAX_AGENT_STEPS` | `10` | 调查工具调用上限，最低为 8 |
+| `DATABASE_URL` | 必填 | PostgreSQL DSN；正常启动必须配置 |
+| `ALLOW_IN_MEMORY_STORAGE` | `false` | 仅供本地临时开发；显式为 `true` 才允许无数据库启动 |
+| `DATABASE_MAX_OPEN_CONNS` | `10` | 最大打开连接数 |
+| `DATABASE_MAX_IDLE_CONNS` | `5` | 最大空闲连接数 |
+| `DATABASE_TIMEOUT_SECONDS` | `5` | 数据库操作超时 |
 
 ## Docker
 
@@ -193,7 +241,7 @@ HTTP 不包含检测逻辑，CLI、HTTP 和测试均调用同一个 `app.Service
 docker compose up --build
 ```
 
-Docker 使用 Go 多阶段构建，最终镜像仅包含静态 Go 二进制、UI、数据集和策略文件，并以非 root 用户运行。
+Docker 使用 Go 多阶段构建；Compose 同时启动带持久卷的 PostgreSQL 17，Server 镜像仍以非 root 用户运行。默认账号只适合本地开发。
 
 ## 当前边界
 

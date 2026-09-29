@@ -71,7 +71,11 @@ type Behavior struct {
 type Alert struct {
 	AlertID        string    `json:"alert_id"`
 	Title          string    `json:"title"`
+	Description    string    `json:"description,omitempty"`
 	Severity       string    `json:"severity"`
+	Source         string    `json:"source"`
+	HostID         string    `json:"host_id,omitempty"`
+	ContainerID    string    `json:"container_id,omitempty"`
 	RuleIDs        []string  `json:"rule_ids"`
 	EventIDs       []string  `json:"event_ids"`
 	EventID        string    `json:"event_id"`

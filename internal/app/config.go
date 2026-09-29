@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const Version = "0.5.0"
+const Version = "0.6.0"
 
 type Config struct {
 	Host                string
@@ -24,6 +24,11 @@ type Config struct {
 	AgentAuditPath      string
 	MaxAgentDecisions   int
 	MaxAgentToolCalls   int
+	DatabaseURL         string
+	DatabaseMaxOpen     int
+	DatabaseMaxIdle     int
+	DatabaseTimeout     time.Duration
+	AllowInMemoryStore  bool
 }
 
 func LoadConfig() (Config, error) {
@@ -63,6 +68,26 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	databaseMaxOpen, err := envInt("DATABASE_MAX_OPEN_CONNS", 10, 1, 100)
+	if err != nil {
+		return Config{}, err
+	}
+	databaseMaxIdle, err := envInt("DATABASE_MAX_IDLE_CONNS", 5, 1, 100)
+	if err != nil {
+		return Config{}, err
+	}
+	databaseTimeout, err := envInt("DATABASE_TIMEOUT_SECONDS", 5, 1, 60)
+	if err != nil {
+		return Config{}, err
+	}
+	allowInMemory, err := envBool("ALLOW_IN_MEMORY_STORAGE", false)
+	if err != nil {
+		return Config{}, err
+	}
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" && !allowInMemory {
+		return Config{}, fmt.Errorf("DATABASE_URL is required; set ALLOW_IN_MEMORY_STORAGE=true only for local development")
+	}
 	return Config{
 		Host: host, Port: port, BodyLimit: int64(body), FileCacheTTL: time.Duration(fileTTL) * time.Second,
 		CorrelationWindow: time.Duration(correlation) * time.Second, InvestigationWindow: time.Duration(investigation) * time.Second,
@@ -71,7 +96,22 @@ func LoadConfig() (Config, error) {
 		ExecutorModel:  envString("QWEN_EXECUTOR_MODEL", "qwen3.7-plus"),
 		AnalyzerModel:  envString("QWEN_ANALYZER_MODEL", "qwen3.7-plus"),
 		AgentAuditPath: os.Getenv("AI_AUDIT_LOG_PATH"), MaxAgentDecisions: decisions, MaxAgentToolCalls: toolCalls,
+		DatabaseURL: databaseURL, DatabaseMaxOpen: databaseMaxOpen,
+		DatabaseMaxIdle: databaseMaxIdle, DatabaseTimeout: time.Duration(databaseTimeout) * time.Second,
+		AllowInMemoryStore: allowInMemory,
 	}, nil
+}
+
+func envBool(name string, fallback bool) (bool, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", name)
+	}
+	return value, nil
 }
 
 func envString(name, fallback string) string {

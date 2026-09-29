@@ -33,7 +33,7 @@ type RuntimeConfig struct {
 // Runtime adapts Agent-Sec's existing event store to the guarded agent tool
 // gateway. It deliberately exposes only read-only investigation tools.
 type Runtime struct {
-	store     *store.Memory
+	store     store.Repository
 	roles     Roles
 	registry  *agenttools.Registry
 	logger    *agentaudit.Logger
@@ -41,7 +41,7 @@ type Runtime struct {
 	config    RuntimeConfig
 }
 
-func NewRuntime(eventStore *store.Memory, config RuntimeConfig) (*Runtime, error) {
+func NewRuntime(eventStore store.Repository, config RuntimeConfig) (*Runtime, error) {
 	if eventStore == nil {
 		return nil, fmt.Errorf("event store is required")
 	}

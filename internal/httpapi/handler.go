@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"sentinel/internal/app"
@@ -66,7 +67,7 @@ func (h *Handler) api(w http.ResponseWriter, r *http.Request) error {
 	if r.Method == http.MethodGet {
 		switch path {
 		case "/api/health":
-			return writeJSON(w, 200, map[string]any{"status": "ok", "version": app.Version, "implementation": "go", "components": map[string]any{"event_processor": "ok", "behavior_engine": "ok", "incident_engine": "ok", "investigation_agent": "ok", "ai_agent": h.service.AIStatus()}})
+			return writeJSON(w, 200, map[string]any{"status": "ok", "version": app.Version, "implementation": "go", "components": map[string]any{"event_processor": "ok", "behavior_engine": "ok", "incident_engine": "ok", "investigation_agent": "ok", "storage": h.service.StorageStatus(), "ai_agent": h.service.AIStatus()}})
 		case "/api/agent/status":
 			return writeJSON(w, 200, h.service.AIStatus())
 		case "/api/summary":
@@ -76,17 +77,39 @@ func (h *Handler) api(w http.ResponseWriter, r *http.Request) error {
 		case "/api/rules":
 			return writeJSON(w, 200, behavior.Definitions)
 		case "/api/events":
-			return writeJSON(w, 200, h.service.Store.Events())
+			items, err := filterEvents(h.service.Store.Events(), r)
+			if err != nil {
+				return err
+			}
+			return writeJSON(w, 200, items)
 		case "/api/behaviors":
 			return writeJSON(w, 200, h.service.Store.Behaviors())
 		case "/api/alerts":
-			return writeJSON(w, 200, h.service.Store.Alerts())
+			items, err := filterAlerts(h.service.Store.Alerts(), r)
+			if err != nil {
+				return err
+			}
+			return writeJSON(w, 200, items)
 		case "/api/incidents":
 			return writeJSON(w, 200, h.service.Store.Incidents())
 		case "/api/collection-policies":
 			return writeJSON(w, 200, h.service.Collection.List())
 		case "/api/processor/stats":
 			return writeJSON(w, 200, h.service.Processor.Stats())
+		}
+		if id, ok := resourceID(path, "events"); ok {
+			event, exists := h.service.Store.Event(id)
+			if !exists {
+				return app.NewError(404, "Event not found")
+			}
+			return writeJSON(w, 200, event)
+		}
+		if id, ok := resourceID(path, "alerts"); ok {
+			alert, exists := h.service.Store.Alert(id)
+			if !exists {
+				return app.NewError(404, "Alert not found")
+			}
+			return writeJSON(w, 200, alert)
 		}
 		if id, suffix, ok := incidentPath(path); ok {
 			incident, exists := h.service.Store.Incident(id)
@@ -104,7 +127,9 @@ func (h *Handler) api(w http.ResponseWriter, r *http.Request) error {
 	if r.Method == http.MethodPost {
 		switch path {
 		case "/api/reset":
-			h.service.Reset()
+			if err := h.service.Reset(); err != nil {
+				return err
+			}
 			return writeJSON(w, 200, map[string]bool{"ok": true})
 		case "/api/events":
 			var input map[string]any
@@ -132,6 +157,27 @@ func (h *Handler) api(w http.ResponseWriter, r *http.Request) error {
 				return err
 			}
 			return writeJSON(w, 201, map[string]any{"events_received": len(input.Events), "events_ingested": len(result.Events), "behaviors_detected": len(result.Behaviors), "incidents_created": len(result.Incidents), "dropped": result.Dropped, "behaviors": result.Behaviors, "incidents": result.Incidents})
+		case "/api/collector/batch":
+			var input struct {
+				Events []map[string]any `json:"events"`
+				Alerts []model.Alert    `json:"alerts"`
+			}
+			if err := h.decode(r, &input); err != nil {
+				return err
+			}
+			if input.Events == nil && input.Alerts == nil {
+				return app.NewError(400, "events or alerts must be provided")
+			}
+			result, err := h.service.IngestCollectorBatch(input.Events, input.Alerts)
+			if err != nil {
+				return err
+			}
+			return writeJSON(w, 201, map[string]any{
+				"events_received": len(input.Events), "events_ingested": len(result.Pipeline.Events),
+				"alerts_received": len(input.Alerts), "alerts_stored": len(result.Alerts),
+				"behaviors_detected": len(result.Pipeline.Behaviors), "incidents_created": len(result.Pipeline.Incidents),
+				"dropped": result.Pipeline.Dropped,
+			})
 		case "/api/replay":
 			var input struct {
 				Dataset string `json:"dataset"`
@@ -306,6 +352,96 @@ func incidentPath(path string) (id, suffix string, ok bool) {
 		suffix = strings.Join(parts[3:], "/")
 	}
 	return id, suffix, true
+}
+
+func resourceID(path, resource string) (string, bool) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 3 || parts[0] != "api" || parts[1] != resource || parts[2] == "" {
+		return "", false
+	}
+	return parts[2], true
+}
+
+func filterEvents(items []model.RuntimeEvent, request *http.Request) ([]model.RuntimeEvent, error) {
+	limit, err := queryLimit(request)
+	if err != nil {
+		return nil, err
+	}
+	eventType := request.URL.Query().Get("type")
+	hostID := request.URL.Query().Get("host_id")
+	containerID := request.URL.Query().Get("container_id")
+	result := make([]model.RuntimeEvent, 0)
+	for _, item := range items {
+		actualType := item.EventType
+		if actualType == "" {
+			actualType = item.Type
+		}
+		actualHost := item.HostID
+		if actualHost == "" {
+			actualHost = item.Host
+		}
+		if eventType != "" && actualType != eventType {
+			continue
+		}
+		if hostID != "" && actualHost != hostID {
+			continue
+		}
+		if containerID != "" && item.ContainerID != containerID {
+			continue
+		}
+		result = append(result, item)
+	}
+	if len(result) > limit {
+		result = result[len(result)-limit:]
+	}
+	return result, nil
+}
+
+func filterAlerts(items []model.Alert, request *http.Request) ([]model.Alert, error) {
+	limit, err := queryLimit(request)
+	if err != nil {
+		return nil, err
+	}
+	severity := request.URL.Query().Get("severity")
+	status := request.URL.Query().Get("status")
+	source := request.URL.Query().Get("source")
+	hostID := request.URL.Query().Get("host_id")
+	containerID := request.URL.Query().Get("container_id")
+	result := make([]model.Alert, 0)
+	for _, item := range items {
+		if severity != "" && !strings.EqualFold(item.Severity, severity) {
+			continue
+		}
+		if status != "" && !strings.EqualFold(item.Status, status) {
+			continue
+		}
+		if source != "" && !strings.EqualFold(item.Source, source) {
+			continue
+		}
+		if hostID != "" && item.HostID != hostID {
+			continue
+		}
+		if containerID != "" && item.ContainerID != containerID {
+			continue
+		}
+		result = append(result, item)
+		if len(result) == limit {
+			break
+		}
+	}
+	return result, nil
+}
+
+func queryLimit(request *http.Request) (int, error) {
+	raw := strings.TrimSpace(request.URL.Query().Get("limit"))
+	if raw == "" {
+		return 200, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > 1000 {
+		return 0, app.NewError(400, "limit must be an integer between 1 and 1000")
+	}
+	return limit, nil
 }
 func candidateRule(incident model.Incident) map[string]any {
 	processes := []string{}

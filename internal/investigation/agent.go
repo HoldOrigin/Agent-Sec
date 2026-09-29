@@ -14,12 +14,12 @@ import (
 )
 
 type Agent struct {
-	store    *store.Memory
+	store    store.Repository
 	policy   *policy.Engine
 	maxSteps int
 }
 
-func New(s *store.Memory, p *policy.Engine, maxSteps int) *Agent {
+func New(s store.Repository, p *policy.Engine, maxSteps int) *Agent {
 	return &Agent{store: s, policy: p, maxSteps: maxSteps}
 }
 
@@ -159,7 +159,7 @@ func (a *Agent) Investigate(base model.Incident) (model.Incident, error) {
 	base.Recommendations = a.recommendations(base, seed)
 	base.ToolTrace = trace
 	base.InvestigationStats = model.InvestigationStats{ToolCalls: len(trace), ContextTypes: []string{"process_tree", "process_events", "file_timeline", "network_timeline", "runtime_graph", "workload", "same_hash", "same_ip"}, ProcessNodes: processNodes, CompressedInput: true, RawSyscallsSentToAI: 0, ProcessEventCount: len(processEvents)}
-	return a.store.AddIncident(base), nil
+	return a.store.AddIncident(base)
 }
 
 func (a *Agent) findOther(match func(model.RuntimeEvent) bool, container string) []model.RuntimeEvent {

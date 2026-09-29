@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,11 +29,11 @@ func (*sliceSource) Close() error                           { return nil }
 func (*sliceSource) Stats() (sensorabi.RuntimeStats, error) { return sensorabi.RuntimeStats{}, nil }
 
 type recordingSender struct {
-	batches []int
+	batches []UploadBatch
 }
 
-func (sender *recordingSender) Send(_ context.Context, events []map[string]any) error {
-	sender.batches = append(sender.batches, len(events))
+func (sender *recordingSender) Send(_ context.Context, batch UploadBatch) error {
+	sender.batches = append(sender.batches, batch)
 	return nil
 }
 
@@ -53,7 +55,7 @@ func TestRunnerDecodesBatchesAndFlushes(t *testing.T) {
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(sender.batches) != 2 || sender.batches[0] != 2 || sender.batches[1] != 1 {
+	if len(sender.batches) != 2 || len(sender.batches[0].Events) != 2 || len(sender.batches[1].Events) != 1 {
 		t.Fatalf("unexpected batches: %#v", sender.batches)
 	}
 	if metrics.Samples.Load() != 4 || metrics.DecodeErrors.Load() != 1 || metrics.Submitted.Load() != 3 {
@@ -84,14 +86,21 @@ func TestRunnerRoutesAndPromotesAlertContext(t *testing.T) {
 	transformer, _ := NewTransformer(HostInfo{HostID: "host", BootID: "boot", BootTime: time.Unix(1, 0).UTC()}, nil)
 	metrics := &Metrics{}
 	router := NewUploadRouter(UploadRouterConfig{BufferTTL: time.Minute, BufferMaxBytes: 1024 * 1024, BufferMaxBytesPerScope: 1024 * 1024, AggregateWindow: time.Minute}, nil, nil, metrics)
-	runner := &Runner{Source: source, Transformer: transformer, Sender: sender, Router: router, Metrics: metrics, BatchSize: 100, FlushInterval: time.Hour, HighFlushInterval: time.Hour}
+	var logs bytes.Buffer
+	runner := &Runner{Source: source, Transformer: transformer, Sender: sender, Router: router, Metrics: metrics, BatchSize: 100, FlushInterval: time.Hour, HighFlushInterval: time.Hour, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
 	if err := runner.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(sender.batches) != 1 || sender.batches[0] != 3 {
+	if output := logs.String(); !strings.Contains(output, "collector event collected") || !strings.Contains(output, "collector alert detected") || !strings.Contains(output, "LOCAL-TEMP-EXEC") {
+		t.Fatalf("expected event and alert logs, got: %s", output)
+	}
+	if len(sender.batches) != 1 || len(sender.batches[0].Events) != 3 || len(sender.batches[0].Alerts) != 1 {
 		t.Fatalf("unexpected batches: %#v", sender.batches)
 	}
-	if metrics.ContextPromoted.Load() != 1 || metrics.HighPrioritySubmitted.Load() != 3 {
-		t.Fatalf("unexpected metrics: promoted=%d high=%d", metrics.ContextPromoted.Load(), metrics.HighPrioritySubmitted.Load())
+	if alert := sender.batches[0].Alerts[0]; alert.Source != "collector" || alert.RuleIDs[0] != "LOCAL-TEMP-EXEC" || alert.EventID == "" {
+		t.Fatalf("unexpected alert: %+v", alert)
+	}
+	if metrics.ContextPromoted.Load() != 1 || metrics.HighPrioritySubmitted.Load() != 3 || metrics.AlertsSubmitted.Load() != 1 {
+		t.Fatalf("unexpected metrics: promoted=%d high=%d alerts=%d", metrics.ContextPromoted.Load(), metrics.HighPrioritySubmitted.Load(), metrics.AlertsSubmitted.Load())
 	}
 }

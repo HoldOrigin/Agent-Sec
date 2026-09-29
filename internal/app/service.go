@@ -19,7 +19,7 @@ import (
 
 type Service struct {
 	Config     Config
-	Store      *store.Memory
+	Store      store.Repository
 	Processor  *processor.Processor
 	Behavior   *behavior.Engine
 	Incident   *incident.Engine
@@ -37,8 +37,17 @@ type PipelineResult struct {
 	Processor model.ProcessResult  `json:"processor,omitempty"`
 }
 
+type CollectorBatchResult struct {
+	Pipeline PipelineResult `json:"pipeline"`
+	Alerts   []model.Alert  `json:"alerts"`
+}
+
 func New(config Config) *Service {
-	s := &Service{Config: config, Store: store.NewMemory(), Processor: processor.New(config.FileCacheTTL), Behavior: behavior.New(), Incident: incident.New(config.CorrelationWindow), Collection: collection.New(config.InvestigationWindow), Policy: policy.New()}
+	return NewWithStore(config, store.NewMemory())
+}
+
+func NewWithStore(config Config, repository store.Repository) *Service {
+	s := &Service{Config: config, Store: repository, Processor: processor.New(config.FileCacheTTL), Behavior: behavior.New(), Incident: incident.New(config.CorrelationWindow), Collection: collection.New(config.InvestigationWindow), Policy: policy.New()}
 	s.Agent = investigation.New(s.Store, s.Policy, config.MaxAgentSteps)
 	if strings.TrimSpace(config.QwenAPIKey) != "" {
 		s.AIAgent, s.AIError = agentic.NewRuntime(s.Store, agentic.RuntimeConfig{
@@ -50,7 +59,14 @@ func New(config Config) *Service {
 	}
 	return s
 }
-func (s *Service) Reset() { s.Store.Reset(); s.Processor.Reset(); s.Collection.Reset() }
+func (s *Service) Reset() error {
+	if err := s.Store.Reset(); err != nil {
+		return fmt.Errorf("reset repository: %w", err)
+	}
+	s.Processor.Reset()
+	s.Collection.Reset()
+	return nil
+}
 func (s *Service) Ingest(input map[string]any, run bool) (PipelineResult, error) {
 	processed, err := s.Processor.Process(input)
 	if err != nil {
@@ -61,7 +77,11 @@ func (s *Service) Ingest(input map[string]any, run bool) (PipelineResult, error)
 		if err := validateEvent(event); err != nil {
 			return PipelineResult{}, err
 		}
-		events = append(events, s.Store.AddEvent(event))
+		stored, err := s.Store.AddEvent(event)
+		if err != nil {
+			return PipelineResult{}, fmt.Errorf("store event %s: %w", event.EventID, err)
+		}
+		events = append(events, stored)
 	}
 	result := PipelineResult{Events: events, Processor: processed}
 	if run {
@@ -74,7 +94,9 @@ func (s *Service) Ingest(input map[string]any, run bool) (PipelineResult, error)
 }
 func (s *Service) IngestMany(inputs []map[string]any, reset bool) (PipelineResult, error) {
 	if reset {
-		s.Reset()
+		if err := s.Reset(); err != nil {
+			return PipelineResult{}, err
+		}
 	}
 	result := PipelineResult{Events: []model.RuntimeEvent{}, Dropped: []map[string]string{}}
 	for _, input := range inputs {
@@ -95,7 +117,9 @@ func (s *Service) IngestMany(inputs []map[string]any, reset bool) (PipelineResul
 func (s *Service) RunPipeline() ([]model.Behavior, []model.Incident, error) {
 	events := s.Store.Events()
 	behaviors := s.Behavior.Derive(events)
-	s.Store.ReplaceBehaviors(behaviors)
+	if err := s.Store.ReplaceBehaviors(behaviors); err != nil {
+		return nil, nil, fmt.Errorf("store behaviors: %w", err)
+	}
 	s.Collection.ObserveBehaviors(behaviors)
 	for _, item := range behaviors {
 		if item.Type != "LocalSecurityPolicyMatch" {
@@ -114,10 +138,14 @@ func (s *Service) RunPipeline() ([]model.Behavior, []model.Incident, error) {
 		if ruleID == "" {
 			ruleID = "LOCAL-DETECTION"
 		}
-		s.Store.AddAlert(model.Alert{
+		if _, err := s.Store.AddAlert(model.Alert{
 			AlertID:        "alt-" + strings.TrimPrefix(item.BehaviorID, "beh-"),
 			Title:          "Local runtime security policy matched",
+			Description:    detailString(item.Details, "reason"),
 			Severity:       severity,
+			Source:         "server",
+			HostID:         item.Scope.HostID,
+			ContainerID:    item.Scope.ContainerID,
 			RuleIDs:        []string{ruleID},
 			EventIDs:       append([]string{}, item.Evidence...),
 			EventID:        eventID,
@@ -125,14 +153,19 @@ func (s *Service) RunPipeline() ([]model.Behavior, []model.Incident, error) {
 			Status:         "open",
 			CreatedAt:      now,
 			UpdatedAt:      now,
-		})
+		}); err != nil {
+			return nil, nil, fmt.Errorf("store local alert: %w", err)
+		}
 	}
 	correlated := s.Incident.Correlate(behaviors, events)
 	s.Collection.ObserveIncidents(correlated)
 	incidents := []model.Incident{}
 	for _, base := range correlated {
 		now := base.StartTime
-		alert := s.Store.AddAlert(model.Alert{AlertID: "alt-" + strings.TrimPrefix(base.IncidentID, "inc-"), Title: "Web RCE Payload Execution Pattern", Severity: base.Severity, RuleIDs: []string{"PATTERN-WEB-RCE-001"}, EventIDs: []string{base.EvidenceEventIDs[0]}, EventID: base.EvidenceEventIDs[0], CorrelationKey: base.HostID + ":" + base.ContainerID, Status: "open", CreatedAt: now, UpdatedAt: now})
+		alert, err := s.Store.AddAlert(model.Alert{AlertID: "alt-" + strings.TrimPrefix(base.IncidentID, "inc-"), Title: "Web RCE Payload Execution Pattern", Severity: base.Severity, Source: "server", HostID: base.HostID, ContainerID: base.ContainerID, RuleIDs: []string{"PATTERN-WEB-RCE-001"}, EventIDs: []string{base.EvidenceEventIDs[0]}, EventID: base.EvidenceEventIDs[0], CorrelationKey: base.HostID + ":" + base.ContainerID, Status: "open", CreatedAt: now, UpdatedAt: now})
+		if err != nil {
+			return nil, nil, fmt.Errorf("store correlated alert: %w", err)
+		}
 		base.AlertID = alert.AlertID
 		investigated, err := s.Agent.Investigate(base)
 		if err != nil {
@@ -141,6 +174,71 @@ func (s *Service) RunPipeline() ([]model.Behavior, []model.Incident, error) {
 		incidents = append(incidents, investigated)
 	}
 	return behaviors, incidents, nil
+}
+
+func (s *Service) IngestCollectorBatch(inputs []map[string]any, alerts []model.Alert) (CollectorBatchResult, error) {
+	pipeline := PipelineResult{Events: []model.RuntimeEvent{}, Behaviors: []model.Behavior{}, Incidents: []model.Incident{}}
+	var err error
+	if len(inputs) > 0 {
+		pipeline, err = s.IngestMany(inputs, false)
+		if err != nil {
+			return CollectorBatchResult{}, err
+		}
+	}
+	stored := make([]model.Alert, 0, len(alerts))
+	for _, alert := range alerts {
+		if alert.EventID == "" {
+			return CollectorBatchResult{}, NewError(400, "alert event_id is required")
+		}
+		event, ok := s.Store.Event(alert.EventID)
+		if !ok {
+			return CollectorBatchResult{}, NewError(400, "alert references unknown event_id: "+alert.EventID)
+		}
+		normalized, err := normalizeCollectorAlert(alert, event)
+		if err != nil {
+			return CollectorBatchResult{}, err
+		}
+		saved, err := s.Store.AddAlert(normalized)
+		if err != nil {
+			return CollectorBatchResult{}, fmt.Errorf("store collector alert %s: %w", alert.AlertID, err)
+		}
+		stored = append(stored, saved)
+	}
+	return CollectorBatchResult{Pipeline: pipeline, Alerts: stored}, nil
+}
+
+func normalizeCollectorAlert(alert model.Alert, event model.RuntimeEvent) (model.Alert, error) {
+	if alert.AlertID == "" {
+		return model.Alert{}, NewError(400, "alert_id is required")
+	}
+	if alert.EventID == "" {
+		return model.Alert{}, NewError(400, "alert event_id is required")
+	}
+	if len(alert.RuleIDs) == 0 || strings.TrimSpace(alert.RuleIDs[0]) == "" {
+		return model.Alert{}, NewError(400, "alert rule_ids is required")
+	}
+	alert.Severity = normalizedSeverity(alert.Severity)
+	alert.Source = "collector"
+	alert.HostID = firstString(alert.HostID, event.HostID, event.Host)
+	alert.ContainerID = firstString(alert.ContainerID, event.ContainerID)
+	if alert.Title == "" {
+		alert.Title = "Collector local detection: " + alert.RuleIDs[0]
+	}
+	alert.EventIDs = appendUniqueString(alert.EventIDs, alert.EventID)
+	alert.CorrelationKey = "B900:" + alert.EventID
+	if alert.Status == "" {
+		alert.Status = "open"
+	}
+	if alert.Status != "open" && alert.Status != "closed" {
+		return model.Alert{}, NewError(400, "alert status must be open or closed")
+	}
+	if alert.CreatedAt.IsZero() {
+		alert.CreatedAt = event.Timestamp
+	}
+	if alert.UpdatedAt.IsZero() {
+		alert.UpdatedAt = alert.CreatedAt
+	}
+	return alert, nil
 }
 func (s *Service) Investigate(id string) (model.Incident, error) {
 	item, ok := s.Store.Incident(id)
@@ -173,6 +271,9 @@ func (s *Service) AIStatus() map[string]any {
 		status["error"] = s.AIError.Error()
 	}
 	return status
+}
+func (s *Service) StorageStatus() map[string]any {
+	return map[string]any{"backend": s.Store.Name(), "durable": s.Store.Name() == "postgresql"}
 }
 func (s *Service) EvaluateAction(request policy.ActionRequest) (model.PolicyDecision, error) {
 	if request.Action == "" {
@@ -256,4 +357,22 @@ func normalizedSeverity(value string) string {
 	default:
 		return "high"
 	}
+}
+
+func firstString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }

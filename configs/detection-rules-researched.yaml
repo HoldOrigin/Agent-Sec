@@ -1,0 +1,129 @@
+# 候选规则包：基于 Falco、Tetragon、Tracee 的公开规则/事件设计整理。
+#
+# 该文件只使用当前 Agent-Sec Transformer 已提供的字段，可直接由 CEL
+# 检测策略加载。它不会替换默认 detection-rules.yaml，生产启用前仍应根据
+# 工作负载、包管理器和运维行为补充规则内排除条件。
+version: "research-v1"
+rules:
+  - id: BL-TEMP-EXEC
+    kind: blacklist
+    description: 临时目录中的可执行文件被启动
+    priority: 100
+    severity: critical
+    condition: >-
+      event.event_type == "process_exec" &&
+      (event.process.exe.startsWith("/tmp/") ||
+       event.process.exe.startsWith("/var/tmp/") ||
+       event.process.exe.startsWith("/dev/shm/"))
+
+  - id: BL-WEB-SHELL
+    kind: blacklist
+    description: Web 服务进程派生 Shell，疑似 WebShell 或命令执行
+    priority: 95
+    severity: critical
+    condition: >-
+      event.event_type == "process_exec" &&
+      event.parent_process in ["java", "nginx", "php-fpm", "node", "python", "gunicorn", "uwsgi"] &&
+      (event.process.exe == "sh" || event.process.exe.endsWith("/sh") ||
+       event.process.exe == "bash" || event.process.exe.endsWith("/bash") ||
+       event.process.exe == "dash" || event.process.exe.endsWith("/dash") ||
+       event.process.exe == "zsh" || event.process.exe.endsWith("/zsh"))
+
+  - id: BL-NETCAT-RCE-CONTAINER
+    kind: blacklist
+    description: 容器内 Netcat 使用远程命令执行参数
+    priority: 90
+    severity: critical
+    condition: >-
+      event.event_type == "process_exec" &&
+      event.container.container_id != "" &&
+      (event.process.exe == "nc" || event.process.exe.endsWith("/nc") ||
+       event.process.exe == "ncat" || event.process.exe.endsWith("/ncat")) &&
+      event.process.argv.exists(arg,
+        arg in ["-e", "-c", "--exec", "--sh-exec", "--lua-exec"])
+
+  - id: BL-LD-PRELOAD-CREATE
+    kind: blacklist
+    description: 创建动态链接器预加载配置，可能用于持久化或库劫持
+    priority: 90
+    severity: critical
+    condition: >-
+      event.event_type == "file_create" &&
+      event.metadata.path == "/etc/ld.so.preload"
+
+  - id: BL-SCHEDULED-TASK-CREATE
+    kind: blacklist
+    description: 在 Cron 或 systemd 持久化目录创建文件
+    priority: 85
+    severity: high
+    condition: >-
+      event.event_type == "file_create" &&
+      (event.metadata.path.startsWith("/etc/cron.d/") ||
+       event.metadata.path.startsWith("/etc/cron.daily/") ||
+       event.metadata.path.startsWith("/etc/cron.hourly/") ||
+       event.metadata.path.startsWith("/etc/cron.weekly/") ||
+       event.metadata.path.startsWith("/etc/systemd/system/"))
+
+  - id: BL-ROOT-AUTHORIZED-KEY-CREATE
+    kind: blacklist
+    description: 创建 root SSH authorized_keys，可能建立远程持久化
+    priority: 85
+    severity: high
+    condition: >-
+      event.event_type == "file_create" &&
+      event.metadata.path == "/root/.ssh/authorized_keys"
+
+  - id: BL-TEMP-EXECUTABLE-CHMOD
+    kind: blacklist
+    description: 临时目录文件被设置为可执行
+    priority: 80
+    severity: high
+    condition: >-
+      event.event_type == "file_chmod" &&
+      event.metadata.executable == true &&
+      (event.metadata.path.startsWith("/tmp/") ||
+       event.metadata.path.startsWith("/var/tmp/") ||
+       event.metadata.path.startsWith("/dev/shm/"))
+
+  - id: BL-TEMP-PROCESS-NETWORK
+    kind: blacklist
+    description: 临时目录进程发起网络连接
+    priority: 75
+    severity: high
+    condition: >-
+      event.event_type == "network_connect" &&
+      (event.metadata.process_exe.startsWith("/tmp/") ||
+       event.metadata.process_exe.startsWith("/var/tmp/") ||
+       event.metadata.process_exe.startsWith("/dev/shm/"))
+
+  - id: BL-ROOT-SHELL-HISTORY-DELETE
+    kind: blacklist
+    description: 删除 root Shell 历史记录，疑似清除痕迹
+    priority: 70
+    severity: high
+    condition: >-
+      event.event_type == "file_unlink" &&
+      event.metadata.path in [
+        "/root/.bash_history",
+        "/root/.zsh_history",
+        "/root/.ash_history"
+      ]
+
+  - id: BL-CONTAINER-SENSITIVE-CREDENTIAL-READ
+    kind: blacklist
+    description: 容器进程打开宿主敏感凭据文件；仅在 WATCH/INVESTIGATION 采集级别可见
+    priority: 60
+    severity: medium
+    condition: >-
+      event.event_type == "file_open" &&
+      event.container.container_id != "" &&
+      (event.metadata.path == "/etc/shadow" ||
+       event.metadata.path.startsWith("/root/.ssh/"))
+
+  - id: WL-KUBE-PROBE
+    kind: whitelist
+    description: 可信 Kubernetes 健康检查进程
+    priority: 50
+    condition: >-
+      event.container.namespace in ["kube-system", "monitoring"] &&
+      event.process.exe in ["/usr/bin/node-exporter", "/bin/kube-probe"]

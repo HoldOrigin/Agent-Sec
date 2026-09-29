@@ -14,6 +14,7 @@ import (
 
 	"sentinel/internal/app"
 	"sentinel/internal/httpapi"
+	"sentinel/internal/model"
 )
 
 func TestReplayAPIAndMetrics(t *testing.T) {
@@ -69,6 +70,14 @@ func TestReplayAPIAndMetrics(t *testing.T) {
 	if payload["implementation"] != "go" {
 		t.Fatalf("health=%+v", payload)
 	}
+	components, ok := payload["components"].(map[string]any)
+	if !ok {
+		t.Fatalf("health components=%+v", payload["components"])
+	}
+	storage, ok := components["storage"].(map[string]any)
+	if !ok || storage["backend"] != "memory" || storage["durable"] != false {
+		t.Fatalf("health storage=%+v", components["storage"])
+	}
 }
 
 func TestBatchAPIAcceptsGzip(t *testing.T) {
@@ -122,5 +131,60 @@ func TestAIInvestigationIsExplicitlyDisabledWithoutAPIKey(t *testing.T) {
 	if response.StatusCode != http.StatusServiceUnavailable {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("status=%d body=%s", response.StatusCode, body)
+	}
+}
+
+func TestCollectorBatchStoresEventsAndStructuredAlerts(t *testing.T) {
+	config := app.Config{Host: "127.0.0.1", Port: 8080, BodyLimit: 1_000_000, FileCacheTTL: time.Minute, CorrelationWindow: 5 * time.Minute, InvestigationWindow: 2 * time.Minute, MaxAgentSteps: 10}
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := app.New(config)
+	server := httptest.NewServer(httpapi.New(service, root))
+	defer server.Close()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	eventID := "evt-collector-alert-1"
+	payload := map[string]any{
+		"events": []map[string]any{{
+			"event_id": eventID, "timestamp": now.Format(time.RFC3339Nano), "event_type": "process_exec",
+			"host":      map[string]any{"host_id": "node-a", "boot_id": "boot-a"},
+			"process":   map[string]any{"pid": 77, "ppid": 1, "exe": "/tmp/payload", "argv": []string{"/tmp/payload"}, "start_time": now.Format(time.RFC3339Nano)},
+			"container": map[string]any{"container_id": "container-a"},
+			"metadata":  map[string]any{"security_alert": true, "detection_rule_id": "LOCAL-TEMP-EXEC", "detection_severity": "critical", "detection_reason": "temporary path execution"},
+		}},
+		"alerts": []model.Alert{{AlertID: "alt-collector-test", Title: "Collector local detection: LOCAL-TEMP-EXEC", Description: "temporary path execution", Severity: "critical", Source: "collector", HostID: "node-a", ContainerID: "container-a", RuleIDs: []string{"LOCAL-TEMP-EXEC"}, EventIDs: []string{eventID}, EventID: eventID, CorrelationKey: "B900:" + eventID, Status: "open", CreatedAt: now, UpdatedAt: now}},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.Post(server.URL+"/api/collector/batch", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(response.Body)
+		t.Fatalf("status=%d body=%s", response.StatusCode, data)
+	}
+	alerts := service.Store.Alerts()
+	if len(alerts) != 1 || alerts[0].Source != "collector" || alerts[0].HostID != "node-a" || alerts[0].RuleIDs[0] != "LOCAL-TEMP-EXEC" {
+		t.Fatalf("alerts=%+v", alerts)
+	}
+	for _, path := range []string{
+		"/api/events/" + eventID,
+		"/api/events?type=process_exec&host_id=node-a&container_id=container-a&limit=10",
+		"/api/alerts/" + alerts[0].AlertID,
+		"/api/alerts?severity=critical&status=open&source=collector&host_id=node-a&limit=10",
+	} {
+		result, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result.Body.Close()
+		if result.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status=%d", path, result.StatusCode)
+		}
 	}
 }

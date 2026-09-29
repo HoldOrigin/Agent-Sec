@@ -1,6 +1,6 @@
 # Agent-Sec 项目架构
 
-本文描述 Agent-Sec v0.5.0 MVP 的实际代码结构、运行链路、模块职责和当前边界。
+本文描述 Agent-Sec v0.6.0 MVP 的实际代码结构、运行链路、模块职责和当前边界。
 更细的 eBPF ABI、Map、Ring Buffer 与过滤设计见
 [`EBPF_RING_BUFFER_DESIGN.md`](EBPF_RING_BUFFER_DESIGN.md)。
 
@@ -13,7 +13,7 @@
 3. 高频事件优先在节点侧过滤、聚合或短期缓存，避免将系统变成全量日志平台；
 4. 告警、行为和调查结论必须能够回溯到原始 `event_id`；
 5. HTTP、CLI 和 UI 只调用应用层接口，不直接包含检测规则；
-6. 当前实现保持模块边界清晰，为 PostgreSQL、OPA 和 LLM Adapter 预留替换点。
+6. 当前实现以 Repository 隔离内存与 PostgreSQL，为 OPA 和其他 LLM Adapter 保留替换点。
 
 ## 2. 总体架构
 
@@ -40,7 +40,8 @@ flowchart LR
     subgraph Server["Sentinel Go Server"]
         API["REST API / Static UI"] --> App["Application Service"]
         App --> Processor["Normalize / Filter / Deduplicate"]
-        Processor --> Store["Memory Repository"]
+        Processor --> Store["Repository"]
+        Store --> PostgreSQL["PostgreSQL JSONB"]
         Store --> Behavior["Behavior Engine"]
         Behavior --> Alert["Direct Alert / B900"]
         Behavior --> Incident["Incident Correlation"]
@@ -51,7 +52,7 @@ flowchart LR
         Graph --> Store
     end
 
-    Sender -->|"POST /api/events/batch"| API
+    Sender -->|"POST /api/collector/batch<br/>events[] + alerts[]"| API
     Replay["JSONL Replay CLI"] --> API
     API --> UI["Browser Investigation Console"]
 ```
@@ -72,7 +73,7 @@ Tracepoint
   → DetectionPolicy
   → UploadPolicy
   → high/normal batch
-  → POST /api/events/batch
+  → POST /api/collector/batch
 ```
 
 当前 Sensor 采集：
@@ -191,7 +192,7 @@ CEL 规则位于 `configs/detection-rules.yaml`。黑名单优先于白名单；
 | `internal/httpapi` | REST 路由、请求限制、gzip 解压、统一错误、CORS、安全响应头和静态文件服务 |
 | `internal/processor` | 兼容扁平/嵌套事件格式，标准化、校验、去重、降噪和临时文件延迟关联 |
 | `internal/model` | 定义 RuntimeEvent、Behavior、Alert、Incident、Graph、Policy 等领域对象 |
-| `internal/store` | 当前线程安全内存 Repository，保存 Event、Behavior、Alert 和 Incident |
+| `internal/store` | Repository 接口、PostgreSQL 持久化与内存实现，保存 Event、Behavior、Alert 和 Incident |
 
 `app.Service` 是服务端唯一应用层入口。HTTP Handler、Replay 和测试通过它调用检测链路，
 避免把业务规则散落到传输层。
@@ -268,10 +269,11 @@ proc://{host}/{boot_id}/{pid}/{process_start_time}
 | 接口 | 调用方 | 作用 |
 |---|---|---|
 | `POST /api/events` | Replay/调试工具 | 接收单条事件并立即执行 Pipeline |
-| `POST /api/events/batch` | Collector | 接收 gzip 或普通 JSON 批次 |
-| `GET /api/events` | UI/调查工具 | 查询当前保存事件 |
+| `POST /api/collector/batch` | Collector | 接收 gzip 或普通 JSON 的 Event + Alert 批次 |
+| `POST /api/events/batch` | Replay/测试 | 仅批量接入 Event 并执行流水线 |
+| `GET /api/events[/{id}]` | UI/调查工具 | 按类型/主机/容器查询事件或读取详情 |
 | `GET /api/behaviors` | UI/调查工具 | 查询行为与证据引用 |
-| `GET /api/alerts` | UI/调查工具 | 查询告警 |
+| `GET /api/alerts[/{id}]` | UI/调查工具 | 按级别/状态/来源/主机/容器查询告警或读取详情 |
 | `GET /api/incidents` | UI/调查工具 | 查询 Incident 与调查结果 |
 | `GET /api/incidents/{id}/graph` | UI | 查询 Incident 子图 |
 | `POST /api/actions/evaluate` | UI/Agent | 评估响应动作是否允许 |
@@ -294,7 +296,7 @@ Collector 独立在 `127.0.0.1:9091/metrics` 暴露节点指标。
 - Rolling Buffer 同时受 TTL、全局字节和单 scope 字节上限约束；
 - Aggregator 限制活跃 key 数，达到上限时输出最久未更新 bucket；
 - HTTP Sender 有超时、重试和 gzip；目前没有磁盘 WAL 或 Server ACK 水位；
-- Server Memory Store、Processor 和 Collection Manager 使用互斥锁保护进程内状态。
+- Server 的 Repository 查询快照、Processor 和 Collection Manager 使用互斥锁保护进程内状态；PostgreSQL 写入成功后才更新快照。
 
 ## 8. 部署形态
 
@@ -303,7 +305,7 @@ Collector 独立在 `127.0.0.1:9091/metrics` 暴露节点指标。
 ```text
 每个 Linux 节点：sentinel-collector + runtime.bpf.o
 中心或单机服务：sentinel server + static UI
-存储：Server 进程内 Memory Repository
+存储：PostgreSQL（Server 默认强制）；显式开发开关下才可使用进程内 Memory Repository
 ```
 
 ### 8.2 目标演进
@@ -316,28 +318,29 @@ Linux Nodes
   → MinIO/S3（冷证据与调查包）
 ```
 
-优先将 `store.Memory` 替换为 PostgreSQL Repository，且继续坚持只持久化高价值、聚合和
-被 Alert 提升的事件，而不是将全部 eBPF 原始事件写入服务端。
+当前已经实现 PostgreSQL Repository。Collector 仍需坚持只上报高价值、聚合和被 Alert
+提升的事件，避免把全部 eBPF 原始事件写入服务端。Schema 和运维说明见
+[`POSTGRESQL_STORAGE.md`](POSTGRESQL_STORAGE.md)。
 
 ## 9. 当前限制
 
-1. 数据只保存在内存，Server 重启后 Event、Behavior、Alert 和 Incident 会丢失；
+1. PostgreSQL 可恢复 Event、Behavior、Alert 和 Incident；显式开发内存模式重启后会丢失；当前查询依赖单实例内存快照，不支持多个 Server 同时写同一数据库；
 2. BPF 目前使用 syscall enter 语义，尚未区分操作成功和失败；
 3. namespace、mount、privilege、ptrace、DNS 等 Hook 尚未实现；
 4. `/proc` Enricher 只能推断容器 ID/Pod UID，尚未连接 CRI/Kubernetes API 获取完整元数据；
 5. 服务端采集策略不能实时下发到 Collector；
 6. Collector 到 Server 尚无 mTLS、节点身份和租户隔离；
 7. Collector 断网后没有加密磁盘 spool；
-8. Behavior Engine 当前基于内存全量事件重新计算，尚未实现乱序窗口和增量关联；
-9. Investigation Agent 是确定性 MVP，实现了证据归纳但没有外部 AI Adapter。
+8. Behavior Engine 当前基于内存快照全量重新计算，并事务性替换数据库派生视图，尚未实现乱序窗口和增量关联；
+9. Qwen AI Agent 调用审计仍写 JSONL，尚未独立持久化到 PostgreSQL。
 
 ## 10. 测试层次
 
 | 层次 | 命令/数据 | 验证目标 |
 |---|---|---|
 | Go 单元测试 | `go test ./...` | ABI、转换、过滤、规则、缓存、聚合、API 和 Pipeline |
+| PostgreSQL 集成测试 | `TEST_DATABASE_URL=... make test-postgres` | 建表、四类对象写入及重启恢复 |
 | 应用回放 | `./bin/replay -file datasets/web_rce.jsonl -reset` | Event → Behavior → Alert → Incident 完整链路 |
 | eBPF 编译 | `make sensor` | BTF、Clang 和共享 ABI 可编译 |
 | Linux 实机 | `sudo ./bin/sentinel-collector ...` | verifier、Tracepoint、Ring Buffer 和 HTTP 上报 |
 | 负载测试 | 尚待补充 | Ring Buffer 丢失率、CPU、内存、网络和背压降级 |
-

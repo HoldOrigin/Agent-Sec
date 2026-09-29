@@ -60,6 +60,21 @@ func TestDefaultRegistryContainsCompleteToolSet(t *testing.T) {
 	}
 }
 
+func TestScopeRootIsOnlyExposedForTreeQueries(t *testing.T) {
+	registry, err := NewRegistry(DefaultSpecs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	login, _ := registry.Get("login_sessions_query")
+	process, _ := registry.Get("process_events_query")
+	if login.AllowScopeRoot {
+		t.Fatal("self-only login query must not accept the scope root")
+	}
+	if !process.AllowScopeRoot {
+		t.Fatal("process tree query should accept the scope root")
+	}
+}
+
 func TestGatewayValidatesAndPagesEvidence(t *testing.T) {
 	e1 := toolTestEvent("e1", "tenant-1", "host-1", domain.EventProcessExec)
 	e2 := toolTestEvent("e2", "tenant-1", "host-1", domain.EventProcessExec)

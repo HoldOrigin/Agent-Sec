@@ -16,13 +16,35 @@ type Memory struct {
 	incidents map[string]model.Incident
 }
 
+// Repository is the storage boundary shared by the HTTP service, the
+// deterministic investigator and the AI runtime. Read methods return an
+// in-process snapshot; mutating methods return errors so a durable backend can
+// fail closed instead of silently losing security evidence.
+type Repository interface {
+	Reset() error
+	AddEvent(model.RuntimeEvent) (model.RuntimeEvent, error)
+	Events() []model.RuntimeEvent
+	Event(string) (model.RuntimeEvent, bool)
+	ReplaceBehaviors([]model.Behavior) error
+	Behaviors() []model.Behavior
+	AddAlert(model.Alert) (model.Alert, error)
+	Alerts() []model.Alert
+	Alert(string) (model.Alert, bool)
+	AddIncident(model.Incident) (model.Incident, error)
+	Incident(string) (model.Incident, bool)
+	Incidents() []model.Incident
+	RelatedEvents(model.RuntimeEvent, time.Duration) []model.RuntimeEvent
+	Close() error
+	Name() string
+}
+
 func NewMemory() *Memory {
 	s := &Memory{}
-	s.Reset()
+	s.reset()
 	return s
 }
 
-func (s *Memory) Reset() {
+func (s *Memory) reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = make(map[string]model.RuntimeEvent)
@@ -31,11 +53,16 @@ func (s *Memory) Reset() {
 	s.incidents = make(map[string]model.Incident)
 }
 
-func (s *Memory) AddEvent(event model.RuntimeEvent) model.RuntimeEvent {
+func (s *Memory) Reset() error {
+	s.reset()
+	return nil
+}
+
+func (s *Memory) AddEvent(event model.RuntimeEvent) (model.RuntimeEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events[event.EventID] = event
-	return event
+	return event, nil
 }
 
 func (s *Memory) Events() []model.RuntimeEvent {
@@ -56,13 +83,14 @@ func (s *Memory) Event(id string) (model.RuntimeEvent, bool) {
 	return event, ok
 }
 
-func (s *Memory) ReplaceBehaviors(items []model.Behavior) {
+func (s *Memory) ReplaceBehaviors(items []model.Behavior) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.behaviors = make(map[string]model.Behavior, len(items))
 	for _, item := range items {
 		s.behaviors[item.BehaviorID] = item
 	}
+	return nil
 }
 
 func (s *Memory) Behaviors() []model.Behavior {
@@ -76,7 +104,7 @@ func (s *Memory) Behaviors() []model.Behavior {
 	return result
 }
 
-func (s *Memory) AddAlert(alert model.Alert) model.Alert {
+func (s *Memory) AddAlert(alert model.Alert) (model.Alert, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, existing := range s.alerts {
@@ -85,15 +113,22 @@ func (s *Memory) AddAlert(alert model.Alert) model.Alert {
 		}
 		existing.RuleIDs = unique(append(existing.RuleIDs, alert.RuleIDs...))
 		existing.EventIDs = unique(append(existing.EventIDs, alert.EventIDs...))
+		if alert.Source == "collector" || existing.Source == "" {
+			existing.Source = alert.Source
+			existing.Title = firstNonEmpty(alert.Title, existing.Title)
+			existing.Description = firstNonEmpty(alert.Description, existing.Description)
+			existing.HostID = firstNonEmpty(alert.HostID, existing.HostID)
+			existing.ContainerID = firstNonEmpty(alert.ContainerID, existing.ContainerID)
+		}
 		if severityRank(alert.Severity) > severityRank(existing.Severity) {
 			existing.Severity = alert.Severity
 		}
 		existing.UpdatedAt = time.Now().UTC()
 		s.alerts[id] = existing
-		return existing
+		return existing, nil
 	}
 	s.alerts[alert.AlertID] = alert
-	return alert
+	return alert, nil
 }
 
 func (s *Memory) Alerts() []model.Alert {
@@ -107,7 +142,14 @@ func (s *Memory) Alerts() []model.Alert {
 	return result
 }
 
-func (s *Memory) AddIncident(incident model.Incident) model.Incident {
+func (s *Memory) Alert(id string) (model.Alert, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	alert, ok := s.alerts[id]
+	return alert, ok
+}
+
+func (s *Memory) AddIncident(incident model.Incident) (model.Incident, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if prior, ok := s.incidents[incident.IncidentID]; ok {
@@ -118,8 +160,11 @@ func (s *Memory) AddIncident(incident model.Incident) model.Incident {
 	}
 	incident.UpdatedAt = time.Now().UTC()
 	s.incidents[incident.IncidentID] = incident
-	return incident
+	return incident, nil
 }
+
+func (s *Memory) Close() error { return nil }
+func (s *Memory) Name() string { return "memory" }
 
 func (s *Memory) Incident(id string) (model.Incident, bool) {
 	s.mu.RLock()
@@ -169,4 +214,13 @@ func unique(values []string) []string {
 
 func severityRank(value string) int {
 	return map[string]int{"low": 1, "medium": 2, "high": 3, "critical": 4}[value]
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

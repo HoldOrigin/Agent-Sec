@@ -123,7 +123,7 @@ func DefaultSpecs() []Spec {
 		return out
 	}
 	query := func(name, description, source string, entities []domain.EntityType, relations []string, kinds ...domain.EventKind) Spec {
-		return Spec{Name: name, Description: description, Source: source, AllowScopeRoot: true,
+		return Spec{Name: name, Description: description, Source: source, AllowScopeRoot: contains(relations, "tree"),
 			Fields: queryFields(entities, relations, stringsOf(kinds...)), EventKinds: all(kinds...)}
 	}
 	get := func(name, description, source, field string, entities ...domain.EntityType) Spec {

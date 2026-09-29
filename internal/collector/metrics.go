@@ -12,6 +12,7 @@ type Metrics struct {
 	DecodeErrors          atomic.Uint64
 	Transformed           atomic.Uint64
 	Submitted             atomic.Uint64
+	AlertsSubmitted       atomic.Uint64
 	HighPrioritySubmitted atomic.Uint64
 	NormalSubmitted       atomic.Uint64
 	SendErrors            atomic.Uint64
@@ -52,6 +53,9 @@ sentinel_collector_events_transformed_total %d
 # HELP sentinel_collector_events_submitted_total RuntimeEvent inputs accepted by the upstream API.
 # TYPE sentinel_collector_events_submitted_total counter
 sentinel_collector_events_submitted_total %d
+# HELP sentinel_collector_alerts_submitted_total Structured local alerts accepted by the upstream API.
+# TYPE sentinel_collector_alerts_submitted_total counter
+sentinel_collector_alerts_submitted_total %d
 # HELP sentinel_collector_high_priority_submitted_total High-priority events delivered to the upstream API.
 # TYPE sentinel_collector_high_priority_submitted_total counter
 sentinel_collector_high_priority_submitted_total %d
@@ -131,5 +135,5 @@ sentinel_ebpf_ringbuf_reserve_failed_total %d
 # HELP sentinel_ebpf_events_filtered_total Events filtered in kernel before reservation.
 # TYPE sentinel_ebpf_events_filtered_total counter
 sentinel_ebpf_events_filtered_total %d
-`, metrics.Samples.Load(), metrics.DecodeErrors.Load(), metrics.Transformed.Load(), metrics.Submitted.Load(), metrics.HighPrioritySubmitted.Load(), metrics.NormalSubmitted.Load(), metrics.SendErrors.Load(), metrics.Batches.Load(), metrics.UploadAlways.Load(), metrics.UploadOnAlertBuffered.Load(), metrics.AggregateInput.Load(), metrics.UploadLocalOnly.Load(), metrics.LocalOnlySummaries.Load(), metrics.LocalAlerts.Load(), metrics.BlacklistHits.Load(), metrics.WhitelistHits.Load(), metrics.RuleReloads.Load(), metrics.RuleReloadErrors.Load(), metrics.RuleEvaluationErrors.Load(), metrics.AggregateInput.Load(), metrics.AggregateOutput.Load(), metrics.ContextPromoted.Load(), metrics.BufferEvicted.Load(), metrics.BufferBytes.Load(), metrics.BufferEntries.Load(), metrics.AggregateKeys.Load(), metrics.ActiveAlertScopes.Load(), metrics.InputQueueDepth.Load(), metrics.UploadPayloadBytes.Load(), metrics.UploadWireBytes.Load(), kernel.Emitted, kernel.ReserveFailed, kernel.Filtered)
+`, metrics.Samples.Load(), metrics.DecodeErrors.Load(), metrics.Transformed.Load(), metrics.Submitted.Load(), metrics.AlertsSubmitted.Load(), metrics.HighPrioritySubmitted.Load(), metrics.NormalSubmitted.Load(), metrics.SendErrors.Load(), metrics.Batches.Load(), metrics.UploadAlways.Load(), metrics.UploadOnAlertBuffered.Load(), metrics.AggregateInput.Load(), metrics.UploadLocalOnly.Load(), metrics.LocalOnlySummaries.Load(), metrics.LocalAlerts.Load(), metrics.BlacklistHits.Load(), metrics.WhitelistHits.Load(), metrics.RuleReloads.Load(), metrics.RuleReloadErrors.Load(), metrics.RuleEvaluationErrors.Load(), metrics.AggregateInput.Load(), metrics.AggregateOutput.Load(), metrics.ContextPromoted.Load(), metrics.BufferEvicted.Load(), metrics.BufferBytes.Load(), metrics.BufferEntries.Load(), metrics.AggregateKeys.Load(), metrics.ActiveAlertScopes.Load(), metrics.InputQueueDepth.Load(), metrics.UploadPayloadBytes.Load(), metrics.UploadWireBytes.Load(), kernel.Emitted, kernel.ReserveFailed, kernel.Filtered)
 }

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"sentinel/internal/model"
 	"sentinel/internal/sensorabi"
 )
 
@@ -57,18 +58,27 @@ func (runner *Runner) Run(ctx context.Context) error {
 	defer normalTicker.Stop()
 	defer highTicker.Stop()
 	defer aggregateTicker.Stop()
-	highBatch := make([]map[string]any, 0, runner.BatchSize)
-	normalBatch := make([]map[string]any, 0, runner.BatchSize)
-	flush := func(flushCtx context.Context, batch *[]map[string]any, priority UploadPriority) error {
+	highBatch := make([]RoutedEvent, 0, runner.BatchSize)
+	normalBatch := make([]RoutedEvent, 0, runner.BatchSize)
+	flush := func(flushCtx context.Context, batch *[]RoutedEvent, priority UploadPriority) error {
 		if len(*batch) == 0 {
 			return nil
 		}
-		if err := runner.Sender.Send(flushCtx, *batch); err != nil {
+		events := make([]map[string]any, 0, len(*batch))
+		alerts := make([]model.Alert, 0)
+		for _, item := range *batch {
+			events = append(events, item.Event)
+			if item.Alert != nil {
+				alerts = append(alerts, *item.Alert)
+			}
+		}
+		if err := runner.Sender.Send(flushCtx, UploadBatch{Events: events, Alerts: alerts}); err != nil {
 			runner.Metrics.SendErrors.Add(1)
 			return err
 		}
 		count := uint64(len(*batch))
 		runner.Metrics.Submitted.Add(count)
+		runner.Metrics.AlertsSubmitted.Add(uint64(len(alerts)))
 		if priority == PriorityHigh {
 			runner.Metrics.HighPrioritySubmitted.Add(count)
 		} else {
@@ -85,7 +95,7 @@ func (runner *Runner) Run(ctx context.Context) error {
 			if priority == PriorityHigh {
 				batch = &highBatch
 			}
-			*batch = append(*batch, item.Event)
+			*batch = append(*batch, item)
 			if len(*batch) >= runner.BatchSize {
 				if err := flush(routeCtx, batch, priority); err != nil {
 					return err
@@ -131,6 +141,8 @@ func (runner *Runner) Run(ctx context.Context) error {
 			if runner.Router != nil {
 				routed = runner.Router.Process(event, time.Now().UTC())
 			}
+			// Route first so local detection metadata is available to the logger.
+			logCollectedEvent(runner.Logger, event)
 			if err := enqueue(ctx, routed); err != nil {
 				return err
 			}
@@ -154,6 +166,37 @@ func (runner *Runner) Run(ctx context.Context) error {
 			_ = runner.Source.Close()
 		}
 	}
+}
+
+func logCollectedEvent(logger *slog.Logger, event map[string]any) {
+	process := eventMap(event, "process")
+	container := eventMap(event, "container")
+	host := eventMap(event, "host")
+	metadata := eventMap(event, "metadata")
+	logger.Info("collector event collected",
+		"event_id", eventString(event, "event_id"),
+		"timestamp", eventString(event, "timestamp"),
+		"event_type", eventString(event, "event_type"),
+		"host_id", valueString(host["host_id"]),
+		"pid", process["pid"],
+		"ppid", process["ppid"],
+		"exe", valueString(process["exe"]),
+		"container_id", valueString(container["container_id"]),
+	)
+	// Keep alerts independently filterable from routine event output.
+	if !valueBool(metadata["security_alert"]) {
+		return
+	}
+	logger.Warn("collector alert detected",
+		"event_id", eventString(event, "event_id"),
+		"event_type", eventString(event, "event_type"),
+		"host_id", valueString(host["host_id"]),
+		"pid", process["pid"],
+		"exe", valueString(process["exe"]),
+		"rule_id", valueString(metadata["detection_rule_id"]),
+		"severity", valueString(metadata["detection_severity"]),
+		"reason", valueString(metadata["detection_reason"]),
+	)
 }
 
 func (runner *Runner) readLoop(ctx context.Context, events chan<- map[string]any, readErrors chan<- error) {

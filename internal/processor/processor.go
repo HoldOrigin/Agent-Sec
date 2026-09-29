@@ -18,8 +18,9 @@ import (
 
 var supported = map[string]bool{
 	"process_fork": true, "process_exec": true, "process_exit": true,
-	"file_open": true, "file_create": true, "file_write": true, "file_rename": true, "file_unlink": true, "file_chmod": true,
-	"network_connect": true, "network_accept": true,
+	"file_open": true, "file_read": true, "file_create": true, "file_write": true, "file_rename": true, "file_unlink": true, "file_chmod": true,
+	"network_connect": true, "network_accept": true, "dns_query": true,
+	"namespace_change": true, "mount": true, "umount": true, "root_change": true, "privilege_change": true, "ptrace": true, "security_alert": true,
 }
 
 type cachedFile struct {
@@ -246,6 +247,12 @@ func IsPublicAddress(value string) bool {
 func shouldFilter(event model.RuntimeEvent) bool {
 	if metaBool(event.Metadata, "agent_process") || metaBool(event.Metadata, "kernel_thread") || metaBool(event.Metadata, "excluded_pid") || metaBool(event.Metadata, "excluded_uid") || metaBool(event.Metadata, "excluded_cgroup") {
 		return true
+	}
+	// A Collector-side detection decision is security evidence. It must not be
+	// discarded by the server's normal low-value event filters, otherwise the
+	// independently uploaded Alert would reference a missing event.
+	if metaBool(event.Metadata, "security_alert") || metaBool(event.Metadata, "blacklist_hit") {
+		return false
 	}
 	if event.Type == "file_open" {
 		path := metaString(event.Metadata, "path")

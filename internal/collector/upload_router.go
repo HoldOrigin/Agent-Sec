@@ -1,13 +1,19 @@
 package collector
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+
+	"sentinel/internal/model"
 )
 
 type RoutedEvent struct {
 	Event    map[string]any
+	Alert    *model.Alert
 	Priority UploadPriority
 }
 
@@ -67,8 +73,11 @@ func (router *UploadRouter) Process(event map[string]any, now time.Time) []Route
 	defer router.mu.Unlock()
 	router.expireAlertsLocked(now)
 	detection := router.detection.Evaluate(event)
+	var alert *model.Alert
 	if detection.Alert {
 		router.metrics.LocalAlerts.Add(1)
+		created := collectorAlert(event, detection, now)
+		alert = &created
 	}
 	annotateDetection(event, detection)
 	decision := router.policy.Decide(event)
@@ -93,7 +102,7 @@ func (router *UploadRouter) Process(event map[string]any, now time.Time) []Route
 				result = append(result, RoutedEvent{Event: contextEvent, Priority: PriorityHigh})
 			}
 		}
-		result = append(result, RoutedEvent{Event: event, Priority: decision.Priority})
+		result = append(result, RoutedEvent{Event: event, Alert: alert, Priority: decision.Priority})
 		sortRoutedEvents(result)
 		router.updateGaugesLocked(now)
 		return result
@@ -125,6 +134,40 @@ func (router *UploadRouter) Process(event map[string]any, now time.Time) []Route
 	}
 	router.updateGaugesLocked(now)
 	return nil
+}
+
+func collectorAlert(event map[string]any, decision DetectionDecision, now time.Time) model.Alert {
+	eventID := eventString(event, "event_id")
+	timestamp := eventTimestamp(event)
+	if timestamp.IsZero() {
+		timestamp = now.UTC()
+	}
+	host := eventMap(event, "host")
+	container := eventMap(event, "container")
+	ruleID := firstString(decision.RuleID, "LOCAL-DETECTION")
+	severity := strings.ToLower(decision.Severity)
+	switch severity {
+	case "low", "medium", "high", "critical":
+	default:
+		severity = "high"
+	}
+	digest := sha256.Sum256([]byte(eventID + "\x00" + ruleID))
+	return model.Alert{
+		AlertID:        "alt-collector-" + hex.EncodeToString(digest[:8]),
+		Title:          "Collector local detection: " + ruleID,
+		Description:    decision.Reason,
+		Severity:       severity,
+		Source:         "collector",
+		HostID:         valueString(host["host_id"]),
+		ContainerID:    valueString(container["container_id"]),
+		RuleIDs:        []string{ruleID},
+		EventIDs:       []string{eventID},
+		EventID:        eventID,
+		CorrelationKey: "B900:" + eventID,
+		Status:         "open",
+		CreatedAt:      timestamp,
+		UpdatedAt:      timestamp,
+	}
 }
 
 func (router *UploadRouter) Flush(now time.Time, force bool) []RoutedEvent {

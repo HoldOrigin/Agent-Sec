@@ -11,7 +11,7 @@ Linux tracepoints
   -> fixed ABI runtime_event
   -> 8 MiB BPF ring buffer
   -> Go collector decode/enrich/batch
-  -> POST /api/events/batch
+  -> POST /api/collector/batch (events[] + alerts[])
   -> Processor -> Behavior -> Graph -> Incident
 ```
 
@@ -145,7 +145,7 @@ Collector 提供 `SetCollectionLevel(cgroupID, level)`；CLI 可通过 `-watch-c
 进程退出过快时可能无法补充元数据，此时仍保留数字 cgroup ID。namespace、pod 名和
 workload 需要 Kubernetes CRI/API 缓存，MVP 不在内核态解析这些控制面信息。
 
-转换后的对象与现有 `/api/events/batch` 输入兼容，网络、文件和 exec 专属字段放在
+转换后的事件对象与 `/api/collector/batch` 的 `events[]` 输入兼容，网络、文件和 exec 专属字段放在
 `metadata`，服务端继续负责去重、低价值过滤和行为图谱派生。
 
 ## 7. 安全、权限和部署
